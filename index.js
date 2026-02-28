@@ -7,6 +7,31 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
+// ─── MongoDB Models for Persistent Storage ──────────────
+const messageSchema = new mongoose.Schema({
+  time: { type: String, required: true },
+  where: { type: String, required: true },
+  senderName: { type: String, required: true },
+  senderNumber: { type: String },
+  message: { type: String },
+  mediaFilename: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const deletedMessageSchema = new mongoose.Schema({
+  time: { type: String, required: true },
+  where: { type: String, required: true },
+  senderName: { type: String, required: true },
+  senderNumber: { type: String },
+  originalMessage: { type: String },
+  sentTime: { type: String },
+  mediaFilename: { type: String },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Message = mongoose.model("Message", messageSchema);
+const DeletedMessage = mongoose.model("DeletedMessage", deletedMessageSchema);
+
 // ─── Validate Environment Variables ─────────────────────
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -255,6 +280,17 @@ async function start() {
       const logEntry = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nMessage: ${messageBody}${mediaRef}\n------------------------------\n`;
 
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
+
+      // Save to MongoDB for persistence
+      await Message.create({
+        time,
+        where: chatLocation,
+        senderName,
+        senderNumber: senderActualNumber,
+        message: messageBody,
+        mediaFilename: mediaRef ? mediaRef.replace("\nMedia: ", "") : undefined,
+      });
+
       console.log(`💾 Saved: ${chatLocation} - ${senderName}`);
     } catch (err) {
       console.error("Message handler error:", err);
@@ -303,6 +339,20 @@ async function start() {
       // Log to file
       const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
+
+      // Save to MongoDB for persistence
+      await DeletedMessage.create({
+        time,
+        where: chatLocation,
+        senderName,
+        senderNumber,
+        originalMessage: originalText,
+        sentTime: beforeMsg && beforeMsg.timestamp
+          ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
+          : "Unknown",
+        mediaFilename: tracked ? tracked.filename : undefined,
+      });
+
       console.log(`🗑️ Delete detected: ${chatLocation} - ${senderName}`);
 
       // ── Push notification via Telegram ──
