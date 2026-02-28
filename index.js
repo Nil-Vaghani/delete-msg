@@ -341,9 +341,16 @@ async function start() {
     if (qrAttempts > 5) {
       console.error("❌ [QR] Too many QR attempts — session might be broken. Consider clearing .wwebjs_auth and restarting.");
       await sendPushNotification("❌ QR Failed", `QR code generated ${qrAttempts} times without successful auth. Session may be corrupted.`);
+      return; // don't send more QR images after 5 failures
     }
 
-    // Send QR code as image to Telegram
+    // Only send the FIRST QR to Telegram (they rotate every ~20s, no need to spam)
+    if (qrAttempts > 1) {
+      console.log("📱 [QR] New QR generated (not re-sending to Telegram — scan from terminal or restart for a fresh Telegram QR)");
+      return;
+    }
+
+    // Send QR code as image to Telegram (first attempt only)
     try {
       const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
       const blob = new Blob([qrBuffer], { type: "image/png" });
@@ -351,7 +358,7 @@ async function start() {
       formData.append("chat_id", TELEGRAM_CHAT_ID);
       formData.append(
         "caption",
-        `📱 Scan this QR code with WhatsApp (attempt #${qrAttempts})`,
+        "📱 Scan this QR code with WhatsApp to connect\n⏱️ QR expires in ~20s — restart bot if it expires",
       );
       formData.append("photo", blob, "qr-code.png");
       const res = await fetch(
@@ -362,7 +369,7 @@ async function start() {
         const errBody = await res.text();
         console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
       } else {
-        console.log("📱 [QR] QR code image sent to Telegram");
+        console.log("📱 [QR] QR code image sent to Telegram (first QR only)");
       }
     } catch (err) {
       console.error("[QR] QR image send error:", err);
