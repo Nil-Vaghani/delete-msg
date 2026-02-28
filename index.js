@@ -322,9 +322,11 @@ async function start() {
       store: store,
       backupSyncIntervalMs: 60000, // backup session every 1 min
     }),
+    authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
     pairWithPhoneNumber: {
       phoneNumber: WA_PHONE_NUMBER,
       showNotification: true,
+      intervalMs: 300000, // refresh pairing code every 5 min (gives more time to enter code)
     },
     puppeteer: {
       headless: true,
