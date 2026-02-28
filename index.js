@@ -513,14 +513,25 @@ async function start() {
       const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save to MongoDB for persistence (including media to GridFS)
+      // Save to MongoDB for persistence — REUSE existing GridFS file ID from original message
       let mediaFileId = null;
-      if (tracked && tracked.mediaData) {
-        mediaFileId = await uploadMediaToGridFS(
-          tracked.mediaData,
-          tracked.mimetype,
-          tracked.filename,
-        );
+      if (tracked && tracked.filename) {
+        // Look up the original message's GridFS file ID instead of re-uploading
+        const originalMsg = await Message.findOne({
+          mediaFilename: `media/temp/${tracked.filename}`,
+        });
+        if (originalMsg && originalMsg.mediaFileId) {
+          mediaFileId = originalMsg.mediaFileId;
+          console.log(`♻️ Reusing existing GridFS file for deleted media: ${tracked.filename}`);
+        } else if (tracked.mediaData) {
+          // Fallback: upload if original wasn't found (shouldn't happen normally)
+          mediaFileId = await uploadMediaToGridFS(
+            tracked.mediaData,
+            tracked.mimetype,
+            tracked.filename,
+          );
+          console.log(`📦 Fallback: uploaded deleted media to GridFS: ${tracked.filename}`);
+        }
       }
 
       await DeletedMessage.create({
