@@ -3,17 +3,15 @@ const { MongoStore } = require("wwebjs-mongo");
 const mongoose = require("mongoose");
 const { GridFSBucket } = require("mongodb");
 const { Readable } = require("stream");
+const QRCode = require("qrcode");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
-// ─── Prevent crash from library's unhandled promise rejections ──
-// whatsapp-web.js calls requestPairingCode() without await, so
-// failures become unhandled rejections that kill the process.
+// ─── Prevent crash from unhandled promise rejections ──
 process.on("unhandledRejection", (reason, promise) => {
   console.error("⚠️ [UNHANDLED] Promise rejection (caught by handler):", reason);
-  // Don't exit — let the library's retry interval handle it
 });
 
 // ─── MongoDB Models for Persistent Storage ──────────────
@@ -312,17 +310,6 @@ async function start() {
   const store = new MongoStore({ mongoose });
 
   console.log("🌐 [CHROME] Launching Chrome browser via Puppeteer...");
-  const WA_PHONE_NUMBER = process.env.WA_PHONE_NUMBER; // e.g. "916354328327" (with country code, no +)
-
-  if (!WA_PHONE_NUMBER) {
-    console.error(
-      "❌ WA_PHONE_NUMBER is required in .env (format: country code + number, e.g. 916354328327). Exiting.",
-    );
-    process.exit(1);
-  }
-  console.log(
-    `📱 [PAIR] Will use phone number pairing for: ${WA_PHONE_NUMBER}`,
-  );
 
   const client = new Client({
     authStrategy: new RemoteAuth({
@@ -331,11 +318,7 @@ async function start() {
       backupSyncIntervalMs: 60000, // backup session every 1 min
     }),
     authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
-    pairWithPhoneNumber: {
-      phoneNumber: WA_PHONE_NUMBER,
-      showNotification: true,
-      intervalMs: 300000, // refresh pairing code every 5 min (gives more time to enter code)
-    },
+    qrMaxRetries: 5, // give up after 5 QR rotations (~100 seconds)
     puppeteer: {
       headless: true,
       args: [
@@ -351,21 +334,45 @@ async function start() {
   console.log("🌐 [CHROME] Client created, initializing WhatsApp Web...");
 
   // ─── WhatsApp Connection Lifecycle Logging ───────────────
+  let qrSentToTelegram = false;
 
   client.on("remote_session_saved", () => {
     console.log("💾 [AUTH] Session saved to MongoDB successfully");
   });
 
-  // Pairing code received — send to Telegram
-  client.on("code", async (code) => {
-    console.log(`\n🔗 [PAIR] Pairing code received: ${code}`);
-    console.log(
-      "👉 Enter this code on your phone: WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number",
-    );
-    await sendPushNotification(
-      "🔗 WhatsApp Pairing Code",
-      `Your pairing code: *${code}*\n\n👉 Open WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number → Enter the code above\n\n⏱️ Code refreshes every 3 minutes automatically`,
-    );
+  client.on("qr", async (qr) => {
+    console.log("\n📱 [QR] New QR code generated");
+
+    // Send QR to Telegram only ONCE (first time)
+    if (!qrSentToTelegram) {
+      qrSentToTelegram = true;
+      try {
+        const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
+        const blob = new Blob([qrBuffer], { type: "image/png" });
+        const formData = new FormData();
+        formData.append("chat_id", TELEGRAM_CHAT_ID);
+        formData.append(
+          "caption",
+          "📱 Scan this QR code with WhatsApp to connect\n⏱️ QR expires in ~20s — if expired, bot will retry up to 5 times\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR",
+        );
+        formData.append("photo", blob, "qr-code.png");
+        const res = await fetch(
+          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+          { method: "POST", body: formData },
+        );
+        if (!res.ok) {
+          const errBody = await res.text();
+          console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
+        } else {
+          console.log("📱 [QR] QR code image sent to Telegram (first QR only)");
+        }
+      } catch (err) {
+        console.error("[QR] QR image send error:", err);
+        await sendPushNotification("📱 QR Code Needed", "A QR code was generated but couldn't be sent as image. Check Render logs.");
+      }
+    } else {
+      console.log("📱 [QR] QR rotated (not re-sending to Telegram — scan quickly or restart bot for a fresh Telegram QR)");
+    }
   });
 
   client.on("authenticated", () => {
@@ -580,7 +587,7 @@ async function start() {
     "🚀 [INIT] Calling client.initialize() — Chrome will open and WhatsApp Web will load...",
   );
   client.initialize().catch(async (err) => {
-    const msg = typeof err === 'string' ? err : err?.message || String(err);
+    const msg = typeof err === "string" ? err : err?.message || String(err);
     console.error("❌ [INIT] client.initialize() FAILED:", msg);
     if (err?.stack) console.error(err.stack);
     await sendPushNotification(
@@ -588,11 +595,14 @@ async function start() {
       `WhatsApp client.initialize() failed:\n${msg}`,
     );
     // If auth timeout, retry once after a delay
-    if (msg.includes('auth timeout') || msg.includes('timeout')) {
+    if (msg.includes("auth timeout") || msg.includes("timeout")) {
       console.log("🔄 [INIT] Retrying client.initialize() in 10 seconds...");
       setTimeout(() => {
         client.initialize().catch((retryErr) => {
-          console.error("❌ [INIT] Retry also failed:", retryErr?.message || retryErr);
+          console.error(
+            "❌ [INIT] Retry also failed:",
+            retryErr?.message || retryErr,
+          );
         });
       }, 10000);
     }
