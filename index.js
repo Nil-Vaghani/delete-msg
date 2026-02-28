@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const { GridFSBucket } = require("mongodb");
 const { Readable } = require("stream");
 const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -304,11 +305,29 @@ async function start() {
   client.on("qr", async (qr) => {
     qrcode.generate(qr, { small: true });
     console.log("Scan QR code:");
-    // Send QR data to Telegram so you can scan remotely
-    await sendPushNotification(
-      "📱 QR Code Needed",
-      `Scan this QR data using any QR generator:\n\n${qr}`,
-    );
+    // Send QR code as image to Telegram
+    try {
+      const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
+      const blob = new Blob([qrBuffer], { type: "image/png" });
+      const formData = new FormData();
+      formData.append("chat_id", TELEGRAM_CHAT_ID);
+      formData.append("caption", "📱 Scan this QR code with WhatsApp to connect");
+      formData.append("photo", blob, "qr-code.png");
+      const res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+        { method: "POST", body: formData },
+      );
+      if (!res.ok) {
+        const errBody = await res.text();
+        console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
+      } else {
+        console.log("📱 QR code image sent to Telegram");
+      }
+    } catch (err) {
+      console.error("QR image send error:", err);
+      // Fallback: send as text
+      await sendPushNotification("📱 QR Code Needed", `QR Data:\n\n${qr}`);
+    }
   });
 
   client.on("ready", async () => {
