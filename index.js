@@ -1,6 +1,8 @@
 const { Client, RemoteAuth } = require("whatsapp-web.js");
 const { MongoStore } = require("wwebjs-mongo");
 const mongoose = require("mongoose");
+const { GridFSBucket } = require("mongodb");
+const { Readable } = require("stream");
 const qrcode = require("qrcode-terminal");
 const http = require("http");
 const fs = require("fs");
@@ -15,6 +17,7 @@ const messageSchema = new mongoose.Schema({
   senderNumber: { type: String },
   message: { type: String },
   mediaFilename: { type: String },
+  mediaFileId: { type: mongoose.Schema.Types.ObjectId }, // GridFS file reference
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -26,6 +29,7 @@ const deletedMessageSchema = new mongoose.Schema({
   originalMessage: { type: String },
   sentTime: { type: String },
   mediaFilename: { type: String },
+  mediaFileId: { type: mongoose.Schema.Types.ObjectId }, // GridFS file reference
   createdAt: { type: Date, default: Date.now },
 });
 
@@ -108,6 +112,63 @@ const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
 // ─── Media Tracker (for delete-for-everyone detection) ──
 // Key: msg serialized ID → { filePath, filename, timeout, mediaData, mimetype }
 const mediaTracker = new Map();
+
+// ─── GridFS & Storage Limit Helpers ─────────────────────
+let gridFSBucket = null;
+const MONGO_STORAGE_LIMIT_MB = parseInt(process.env.MONGO_STORAGE_LIMIT_MB || "450"); // default 450MB (safe margin for 512MB free tier)
+
+function initGridFS() {
+  if (!gridFSBucket) {
+    gridFSBucket = new GridFSBucket(mongoose.connection.db, { bucketName: "media" });
+  }
+  return gridFSBucket;
+}
+
+// Check if MongoDB storage is within limits
+async function isStorageWithinLimit() {
+  try {
+    const stats = await mongoose.connection.db.stats();
+    const usedMB = stats.dataSize / (1024 * 1024);
+    console.log(`📊 MongoDB storage: ${usedMB.toFixed(1)}MB / ${MONGO_STORAGE_LIMIT_MB}MB`);
+    return usedMB < MONGO_STORAGE_LIMIT_MB;
+  } catch (err) {
+    console.error("Storage check error:", err.message);
+    return false; // fail-safe: don't store if we can't check
+  }
+}
+
+// Upload media to GridFS, returns file ID or null
+async function uploadMediaToGridFS(base64data, mimetype, filename) {
+  try {
+    if (!(await isStorageWithinLimit())) {
+      console.warn("⚠️ MongoDB storage limit reached — skipping media upload");
+      return null;
+    }
+    const bucket = initGridFS();
+    const buffer = Buffer.from(base64data, "base64");
+    const readable = new Readable();
+    readable.push(buffer);
+    readable.push(null);
+
+    return new Promise((resolve, reject) => {
+      const uploadStream = bucket.openUploadStream(filename, {
+        contentType: mimetype,
+      });
+      readable.pipe(uploadStream)
+        .on("error", (err) => {
+          console.error("GridFS upload error:", err);
+          reject(err);
+        })
+        .on("finish", () => {
+          console.log(`📦 Media uploaded to MongoDB: ${filename}`);
+          resolve(uploadStream.id);
+        });
+    });
+  } catch (err) {
+    console.error("GridFS upload error:", err.message);
+    return null;
+  }
+}
 
 // WhatsApp "Delete for Everyone" window ≈ 68 hours
 const DELETE_WINDOW_MS = 68 * 60 * 60 * 1000;
@@ -270,10 +331,16 @@ async function start() {
 
       // Save media temporarily (for delete-for-everyone capture)
       let mediaRef = "";
+      let mediaFileId = null;
       if (msg.hasMedia) {
         const filename = await saveMediaToTemp(msg);
         if (filename) {
           mediaRef = `\nMedia: media/temp/${filename}`;
+          // Upload media to MongoDB GridFS
+          const tracked = mediaTracker.get(msg.id._serialized);
+          if (tracked && tracked.mediaData) {
+            mediaFileId = await uploadMediaToGridFS(tracked.mediaData, tracked.mimetype, filename);
+          }
         }
       }
 
@@ -289,6 +356,7 @@ async function start() {
         senderNumber: senderActualNumber,
         message: messageBody,
         mediaFilename: mediaRef ? mediaRef.replace("\nMedia: ", "") : undefined,
+        mediaFileId: mediaFileId || undefined,
       });
 
       console.log(`💾 Saved: ${chatLocation} - ${senderName}`);
@@ -340,7 +408,12 @@ async function start() {
       const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save to MongoDB for persistence
+      // Save to MongoDB for persistence (including media to GridFS)
+      let mediaFileId = null;
+      if (tracked && tracked.mediaData) {
+        mediaFileId = await uploadMediaToGridFS(tracked.mediaData, tracked.mimetype, tracked.filename);
+      }
+
       await DeletedMessage.create({
         time,
         where: chatLocation,
@@ -351,6 +424,7 @@ async function start() {
           ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
           : "Unknown",
         mediaFilename: tracked ? tracked.filename : undefined,
+        mediaFileId: mediaFileId || undefined,
       });
 
       console.log(`🗑️ Delete detected: ${chatLocation} - ${senderName}`);
