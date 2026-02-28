@@ -8,6 +8,14 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
+// ─── Prevent crash from library's unhandled promise rejections ──
+// whatsapp-web.js calls requestPairingCode() without await, so
+// failures become unhandled rejections that kill the process.
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("⚠️ [UNHANDLED] Promise rejection (caught by handler):", reason);
+  // Don't exit — let the library's retry interval handle it
+});
+
 // ─── MongoDB Models for Persistent Storage ──────────────
 const messageSchema = new mongoose.Schema({
   time: { type: String, required: true },
@@ -571,13 +579,23 @@ async function start() {
   console.log(
     "🚀 [INIT] Calling client.initialize() — Chrome will open and WhatsApp Web will load...",
   );
-  client.initialize().catch((err) => {
-    console.error("❌ [INIT] client.initialize() FAILED:", err.message);
-    console.error(err.stack);
-    sendPushNotification(
+  client.initialize().catch(async (err) => {
+    const msg = typeof err === 'string' ? err : err?.message || String(err);
+    console.error("❌ [INIT] client.initialize() FAILED:", msg);
+    if (err?.stack) console.error(err.stack);
+    await sendPushNotification(
       "❌ Init Failed",
-      `WhatsApp client.initialize() failed:\n${err.message}`,
+      `WhatsApp client.initialize() failed:\n${msg}`,
     );
+    // If auth timeout, retry once after a delay
+    if (msg.includes('auth timeout') || msg.includes('timeout')) {
+      console.log("🔄 [INIT] Retrying client.initialize() in 10 seconds...");
+      setTimeout(() => {
+        client.initialize().catch((retryErr) => {
+          console.error("❌ [INIT] Retry also failed:", retryErr?.message || retryErr);
+        });
+      }, 10000);
+    }
   });
 
   // ─── Health Check Server (for Render) ──────────────────
