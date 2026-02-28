@@ -326,31 +326,8 @@ async function start() {
 
   console.log("🌐 [CHROME] Client created, initializing WhatsApp Web...");
 
-  // ─── WhatsApp Connection Lifecycle Logging ───────────────
-  let qrAttempts = 0;
-
-  client.on("remote_session_saved", () => {
-    console.log("💾 [AUTH] Session saved to MongoDB successfully");
-  });
-
-  client.on("qr", async (qr) => {
-    qrAttempts++;
-    console.log(`\n📱 [QR] QR code generated (attempt #${qrAttempts})`);
-    qrcode.generate(qr, { small: true });
-
-    if (qrAttempts > 5) {
-      console.error("❌ [QR] Too many QR attempts — session might be broken. Consider clearing .wwebjs_auth and restarting.");
-      await sendPushNotification("❌ QR Failed", `QR code generated ${qrAttempts} times without successful auth. Session may be corrupted.`);
-      return; // don't send more QR images after 5 failures
-    }
-
-    // Only send the FIRST QR to Telegram (they rotate every ~20s, no need to spam)
-    if (qrAttempts > 1) {
-      console.log("📱 [QR] New QR generated (not re-sending to Telegram — scan from terminal or restart for a fresh Telegram QR)");
-      return;
-    }
-
-    // Send QR code as image to Telegram (first attempt only)
+  // Helper: send QR image to Telegram
+  async function sendQRToTelegram(qr, attempt) {
     try {
       const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
       const blob = new Blob([qrBuffer], { type: "image/png" });
@@ -358,7 +335,7 @@ async function start() {
       formData.append("chat_id", TELEGRAM_CHAT_ID);
       formData.append(
         "caption",
-        "📱 Scan this QR code with WhatsApp to connect\n⏱️ QR expires in ~20s — restart bot if it expires",
+        `📱 Scan this QR code with WhatsApp (attempt #${attempt})\n⏱️ QR expires in ~20s — restart bot if it expires`,
       );
       formData.append("photo", blob, "qr-code.png");
       const res = await fetch(
@@ -369,13 +346,64 @@ async function start() {
         const errBody = await res.text();
         console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
       } else {
-        console.log("📱 [QR] QR code image sent to Telegram (first QR only)");
+        console.log("📱 [QR] QR code image sent to Telegram");
       }
     } catch (err) {
       console.error("[QR] QR image send error:", err);
-      // Fallback: send as text
       await sendPushNotification("📱 QR Code Needed", `QR Data:\n\n${qr}`);
     }
+  }
+
+  // ─── WhatsApp Connection Lifecycle Logging ───────────────
+  let qrAttempts = 0;
+  const WA_PHONE_NUMBER = process.env.WA_PHONE_NUMBER; // e.g. "916354328327" (with country code, no +)
+
+  client.on("remote_session_saved", () => {
+    console.log("💾 [AUTH] Session saved to MongoDB successfully");
+  });
+
+  client.on("qr", async (qr) => {
+    qrAttempts++;
+    console.log(`\n📱 [QR] QR code generated (attempt #${qrAttempts})`);
+
+    // ── Phone number pairing method (preferred) ──
+    if (WA_PHONE_NUMBER) {
+      if (qrAttempts === 1) {
+        try {
+          console.log(`📱 [PAIR] Requesting pairing code for ${WA_PHONE_NUMBER}...`);
+          const pairingCode = await client.requestPairingCode(WA_PHONE_NUMBER);
+          console.log(`✅ [PAIR] Pairing code: ${pairingCode}`);
+          console.log("👉 Enter this code on your phone: WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number");
+          await sendPushNotification(
+            "🔗 WhatsApp Pairing Code",
+            `Your pairing code: *${pairingCode}*\n\n👉 Open WhatsApp → Settings → Linked Devices → Link a Device → Link with phone number → Enter the code above`
+          );
+        } catch (err) {
+          console.error("❌ [PAIR] Pairing code request failed:", err.message);
+          // Fallback: send QR to Telegram
+          await sendQRToTelegram(qr, qrAttempts);
+        }
+      } else {
+        console.log("📱 [PAIR] Waiting for pairing code to be entered on phone...");
+      }
+      return;
+    }
+
+    // ── QR code method (fallback if no phone number configured) ──
+    qrcode.generate(qr, { small: true });
+
+    if (qrAttempts > 5) {
+      console.error("❌ [QR] Too many QR attempts — session might be broken. Consider clearing .wwebjs_auth and restarting.");
+      await sendPushNotification("❌ QR Failed", `QR code generated ${qrAttempts} times without successful auth. Session may be corrupted.`);
+      return;
+    }
+
+    if (qrAttempts > 1) {
+      console.log("📱 [QR] New QR generated (not re-sending to Telegram — scan from terminal or restart for a fresh Telegram QR)");
+      return;
+    }
+
+    await sendQRToTelegram(qr, qrAttempts);
   });
 
   client.on("authenticated", () => {
