@@ -284,12 +284,31 @@ async function saveMediaToTemp(msg) {
 // ─── Client Setup ────────────────────────────────────────
 async function start() {
   // Connect to MongoDB for session persistence
-  await mongoose.connect(process.env.MONGODB_URI);
-  console.log("📦 Connected to MongoDB");
+  console.log("🔗 [MONGO] Connecting to MongoDB...");
+  try {
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log("✅ [MONGO] Connected to MongoDB successfully");
+  } catch (err) {
+    console.error("❌ [MONGO] MongoDB connection FAILED:", err.message);
+    process.exit(1);
+  }
+
+  mongoose.connection.on("error", (err) => {
+    console.error("❌ [MONGO] MongoDB connection error:", err.message);
+  });
+  mongoose.connection.on("disconnected", () => {
+    console.warn("⚠️ [MONGO] MongoDB disconnected");
+  });
+  mongoose.connection.on("reconnected", () => {
+    console.log("🔗 [MONGO] MongoDB reconnected");
+  });
+
   const store = new MongoStore({ mongoose });
 
+  console.log("🌐 [CHROME] Launching Chrome browser via Puppeteer...");
   const client = new Client({
     authStrategy: new RemoteAuth({
+      clientId: "wa-agent",
       store: store,
       backupSyncIntervalMs: 60000, // backup session every 1 min
     }),
@@ -305,13 +324,25 @@ async function start() {
     },
   });
 
+  console.log("🌐 [CHROME] Client created, initializing WhatsApp Web...");
+
+  // ─── WhatsApp Connection Lifecycle Logging ───────────────
+  let qrAttempts = 0;
+
   client.on("remote_session_saved", () => {
-    console.log("💾 Session saved to MongoDB");
+    console.log("💾 [AUTH] Session saved to MongoDB successfully");
   });
 
   client.on("qr", async (qr) => {
+    qrAttempts++;
+    console.log(`\n📱 [QR] QR code generated (attempt #${qrAttempts})`);
     qrcode.generate(qr, { small: true });
-    console.log("Scan QR code:");
+
+    if (qrAttempts > 5) {
+      console.error("❌ [QR] Too many QR attempts — session might be broken. Consider clearing .wwebjs_auth and restarting.");
+      await sendPushNotification("❌ QR Failed", `QR code generated ${qrAttempts} times without successful auth. Session may be corrupted.`);
+    }
+
     // Send QR code as image to Telegram
     try {
       const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
@@ -320,7 +351,7 @@ async function start() {
       formData.append("chat_id", TELEGRAM_CHAT_ID);
       formData.append(
         "caption",
-        "📱 Scan this QR code with WhatsApp to connect",
+        `📱 Scan this QR code with WhatsApp (attempt #${qrAttempts})`,
       );
       formData.append("photo", blob, "qr-code.png");
       const res = await fetch(
@@ -331,17 +362,42 @@ async function start() {
         const errBody = await res.text();
         console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
       } else {
-        console.log("📱 QR code image sent to Telegram");
+        console.log("📱 [QR] QR code image sent to Telegram");
       }
     } catch (err) {
-      console.error("QR image send error:", err);
+      console.error("[QR] QR image send error:", err);
       // Fallback: send as text
       await sendPushNotification("📱 QR Code Needed", `QR Data:\n\n${qr}`);
     }
   });
 
+  client.on("authenticated", () => {
+    console.log("✅ [AUTH] WhatsApp authenticated successfully! Waiting for session to load...");
+  });
+
+  client.on("auth_failure", async (message) => {
+    console.error(`❌ [AUTH] Authentication FAILED: ${message}`);
+    await sendPushNotification("❌ Auth Failed", `WhatsApp authentication failed:\n${message}\n\nA new QR code will be generated.`);
+  });
+
+  client.on("loading_screen", (percent, message) => {
+    console.log(`⏳ [LOADING] WhatsApp loading: ${percent}% — ${message}`);
+  });
+
+  client.on("disconnected", async (reason) => {
+    console.error(`🔌 [DISCONNECTED] WhatsApp disconnected: ${reason}`);
+    await sendPushNotification("🔌 Disconnected", `WhatsApp disconnected.\nReason: ${reason}\n\nThe bot will try to reconnect.`);
+  });
+
+  client.on("change_state", (state) => {
+    console.log(`🔄 [STATE] WhatsApp connection state changed: ${state}`);
+  });
+
   client.on("ready", async () => {
-    console.log("✅ AI Agent ready, Nil! Logging all incoming messages.");
+    qrAttempts = 0; // reset on successful connect
+    console.log("\n✅ [READY] WhatsApp connected & ready! Logging all incoming messages.");
+    console.log(`✅ [READY] Logged in at: ${new Date().toLocaleString()}`);
+    await sendPushNotification("✅ WhatsApp Connected", `Bot is now connected and ready.\nTime: ${new Date().toLocaleString()}`);
   });
 
   // ─── Incoming Messages ──────────────────────────────────
@@ -511,7 +567,12 @@ async function start() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  client.initialize();
+  console.log("🚀 [INIT] Calling client.initialize() — Chrome will open and WhatsApp Web will load...");
+  client.initialize().catch((err) => {
+    console.error("❌ [INIT] client.initialize() FAILED:", err.message);
+    console.error(err.stack);
+    sendPushNotification("❌ Init Failed", `WhatsApp client.initialize() failed:\n${err.message}`);
+  });
 
   // ─── Health Check Server (for Render) ──────────────────
   const PORT = process.env.PORT || 3000;
