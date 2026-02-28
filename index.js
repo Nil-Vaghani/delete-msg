@@ -116,11 +116,15 @@ const mediaTracker = new Map();
 
 // ─── GridFS & Storage Limit Helpers ─────────────────────
 let gridFSBucket = null;
-const MONGO_STORAGE_LIMIT_MB = parseInt(process.env.MONGO_STORAGE_LIMIT_MB || "450"); // default 450MB (safe margin for 512MB free tier)
+const MONGO_STORAGE_LIMIT_MB = parseInt(
+  process.env.MONGO_STORAGE_LIMIT_MB || "450",
+); // default 450MB (safe margin for 512MB free tier)
 
 function initGridFS() {
   if (!gridFSBucket) {
-    gridFSBucket = new GridFSBucket(mongoose.connection.db, { bucketName: "media" });
+    gridFSBucket = new GridFSBucket(mongoose.connection.db, {
+      bucketName: "media",
+    });
   }
   return gridFSBucket;
 }
@@ -130,7 +134,9 @@ async function isStorageWithinLimit() {
   try {
     const stats = await mongoose.connection.db.stats();
     const usedMB = stats.dataSize / (1024 * 1024);
-    console.log(`📊 MongoDB storage: ${usedMB.toFixed(1)}MB / ${MONGO_STORAGE_LIMIT_MB}MB`);
+    console.log(
+      `📊 MongoDB storage: ${usedMB.toFixed(1)}MB / ${MONGO_STORAGE_LIMIT_MB}MB`,
+    );
     return usedMB < MONGO_STORAGE_LIMIT_MB;
   } catch (err) {
     console.error("Storage check error:", err.message);
@@ -155,7 +161,8 @@ async function uploadMediaToGridFS(base64data, mimetype, filename) {
       const uploadStream = bucket.openUploadStream(filename, {
         contentType: mimetype,
       });
-      readable.pipe(uploadStream)
+      readable
+        .pipe(uploadStream)
         .on("error", (err) => {
           console.error("GridFS upload error:", err);
           reject(err);
@@ -311,7 +318,10 @@ async function start() {
       const blob = new Blob([qrBuffer], { type: "image/png" });
       const formData = new FormData();
       formData.append("chat_id", TELEGRAM_CHAT_ID);
-      formData.append("caption", "📱 Scan this QR code with WhatsApp to connect");
+      formData.append(
+        "caption",
+        "📱 Scan this QR code with WhatsApp to connect",
+      );
       formData.append("photo", blob, "qr-code.png");
       const res = await fetch(
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
@@ -358,7 +368,11 @@ async function start() {
           // Upload media to MongoDB GridFS
           const tracked = mediaTracker.get(msg.id._serialized);
           if (tracked && tracked.mediaData) {
-            mediaFileId = await uploadMediaToGridFS(tracked.mediaData, tracked.mimetype, filename);
+            mediaFileId = await uploadMediaToGridFS(
+              tracked.mediaData,
+              tracked.mimetype,
+              filename,
+            );
           }
         }
       }
@@ -430,7 +444,11 @@ async function start() {
       // Save to MongoDB for persistence (including media to GridFS)
       let mediaFileId = null;
       if (tracked && tracked.mediaData) {
-        mediaFileId = await uploadMediaToGridFS(tracked.mediaData, tracked.mimetype, tracked.filename);
+        mediaFileId = await uploadMediaToGridFS(
+          tracked.mediaData,
+          tracked.mimetype,
+          tracked.filename,
+        );
       }
 
       await DeletedMessage.create({
@@ -439,9 +457,10 @@ async function start() {
         senderName,
         senderNumber,
         originalMessage: originalText,
-        sentTime: beforeMsg && beforeMsg.timestamp
-          ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
-          : "Unknown",
+        sentTime:
+          beforeMsg && beforeMsg.timestamp
+            ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
+            : "Unknown",
         mediaFilename: tracked ? tracked.filename : undefined,
         mediaFileId: mediaFileId || undefined,
       });
