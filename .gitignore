@@ -1,0 +1,8 @@
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+.env
+media/temp/
+media/saved/
+messages_log.txt
+ask.sh

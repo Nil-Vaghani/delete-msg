@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: wa-ai-agent
+    runtime: node
+    buildCommand: ./render-build.sh
+    startCommand: node index.js
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: MONGODB_URI
+        sync: false

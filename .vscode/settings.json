@@ -1,0 +1,8 @@
+{
+  "chat.commandApproval": {
+    "bash ask.sh": false,
+    "./ask.sh": false,
+    "sh ask.sh": false,
+    "/home/nil/wa-ai-agent/ask.sh": false
+  }
+}
