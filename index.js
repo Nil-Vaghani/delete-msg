@@ -1,10 +1,5 @@
-const { Client, RemoteAuth } = require("whatsapp-web.js");
-const { MongoStore } = require("wwebjs-mongo");
-const mongoose = require("mongoose");
-const { GridFSBucket } = require("mongodb");
-const { Readable } = require("stream");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 const QRCode = require("qrcode");
-// const http = require("http"); // no longer needed (removed Render health server)
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
@@ -24,29 +19,10 @@ process.on("unhandledRejection", (reason, promise) => {
   );
 });
 
-// ─── MongoDB Models for Persistent Storage ──────────────
-const deletedMessageSchema = new mongoose.Schema({
-  time: { type: String, required: true },
-  where: { type: String, required: true },
-  senderName: { type: String, required: true },
-  senderNumber: { type: String },
-  originalMessage: { type: String },
-  sentTime: { type: String },
-  mediaFilename: { type: String },
-  mediaFileId: { type: mongoose.Schema.Types.ObjectId }, // GridFS file reference
-  createdAt: { type: Date, default: Date.now, expires: 68 * 60 * 60 }, // Auto-delete after 68 hours
-});
-
-const DeletedMessage = mongoose.model("DeletedMessage", deletedMessageSchema);
-
 // ─── Validate Environment Variables ─────────────────────
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-if (!process.env.MONGODB_URI) {
-  console.error("❌ MONGODB_URI is required. Exiting.");
-  process.exit(1);
-}
 if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
   console.warn(
     "⚠️ Telegram credentials missing — notifications will be disabled.",
@@ -146,18 +122,17 @@ const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
 // ─── Message Cache (for delete-for-everyone detection) ────────
 const messageCache = new Map();
 const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000;
-const MAX_CACHE_SIZE = 500; // Limit cache to 500 messages to save memory
+const MAX_CACHE_SIZE = 500;
 
 // Dedup set for revoke events (prevents processing same deletion twice)
 const processedRevokes = new Set();
-const REVOKE_DEDUP_TTL_MS = 60 * 1000; // clear dedup entry after 60 seconds
+const REVOKE_DEDUP_TTL_MS = 60 * 1000;
 
 // Startup grace period — ignore old revocations synced on connect
 let readyTimestamp = 0;
-const STARTUP_GRACE_MS = 30 * 1000; // 30 seconds after ready
+const STARTUP_GRACE_MS = 30 * 1000;
 
 function cacheMessage(msgId, data) {
-  // Evict oldest entries if cache is too large
   if (messageCache.size >= MAX_CACHE_SIZE) {
     const oldestKey = messageCache.keys().next().value;
     messageCache.delete(oldestKey);
@@ -167,8 +142,7 @@ function cacheMessage(msgId, data) {
 }
 
 // ─── Media Tracker (for delete-for-everyone detection) ──
-// Key: msg serialized ID → { filePath, filename, timeout, mimetype }
-// NOTE: media data is NOT stored in RAM — read from disk when needed
+// Key: msg serialized ID → { filePath, filename, timeout, mimetype, msgFilePath, ... }
 const mediaTracker = new Map();
 
 // ─── Helper: Read media from disk as base64 ─────────────
@@ -183,77 +157,12 @@ function readMediaAsBase64(filePath) {
   return null;
 }
 
-// ─── GridFS & Storage Limit Helpers ─────────────────────
-let gridFSBucket = null;
-const MONGO_STORAGE_LIMIT_MB = parseInt(
-  process.env.MONGO_STORAGE_LIMIT_MB || "450",
-); // default 450MB (safe margin for 512MB free tier)
-
-function initGridFS() {
-  if (!gridFSBucket) {
-    gridFSBucket = new GridFSBucket(mongoose.connection.db, {
-      bucketName: "media",
-    });
-  }
-  return gridFSBucket;
-}
-
-// Check if MongoDB storage is within limits
-async function isStorageWithinLimit() {
-  try {
-    const stats = await mongoose.connection.db.stats();
-    const usedMB = stats.dataSize / (1024 * 1024);
-    console.log(
-      `📊 MongoDB storage: ${usedMB.toFixed(1)}MB / ${MONGO_STORAGE_LIMIT_MB}MB`,
-    );
-    return usedMB < MONGO_STORAGE_LIMIT_MB;
-  } catch (err) {
-    console.error("Storage check error:", err.message);
-    return false; // fail-safe: don't store if we can't check
-  }
-}
-
-// Upload media to GridFS, returns file ID or null
-async function uploadMediaToGridFS(base64data, mimetype, filename) {
-  try {
-    if (!(await isStorageWithinLimit())) {
-      console.warn("⚠️ MongoDB storage limit reached — skipping media upload");
-      return null;
-    }
-    const bucket = initGridFS();
-    const buffer = Buffer.from(base64data, "base64");
-    const readable = new Readable();
-    readable.push(buffer);
-    readable.push(null);
-
-    return new Promise((resolve, reject) => {
-      const uploadStream = bucket.openUploadStream(filename, {
-        contentType: mimetype,
-      });
-      readable
-        .pipe(uploadStream)
-        .on("error", (err) => {
-          console.error("GridFS upload error:", err);
-          reject(err);
-        })
-        .on("finish", () => {
-          console.log(`📦 Media uploaded to MongoDB: ${filename}`);
-          resolve(uploadStream.id);
-        });
-    });
-  } catch (err) {
-    console.error("GridFS upload error:", err.message);
-    return null;
-  }
-}
-
 // WhatsApp "Delete for Everyone" window ≈ 68 hours
 const DELETE_WINDOW_MS = 68 * 60 * 60 * 1000;
 
 // ─── Helper: mimetype → file extension ──────────────────
 function getExtension(mimetype) {
   const map = {
-    // Images
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
@@ -263,14 +172,12 @@ function getExtension(mimetype) {
     "image/heic": ".heic",
     "image/heif": ".heif",
     "image/svg+xml": ".svg",
-    // Videos
     "video/mp4": ".mp4",
     "video/3gpp": ".3gp",
     "video/quicktime": ".mov",
     "video/x-msvideo": ".avi",
     "video/webm": ".webm",
     "video/x-matroska": ".mkv",
-    // Audio
     "audio/ogg; codecs=opus": ".ogg",
     "audio/ogg": ".ogg",
     "audio/mpeg": ".mp3",
@@ -279,7 +186,6 @@ function getExtension(mimetype) {
     "audio/aac": ".aac",
     "audio/flac": ".flac",
     "audio/amr": ".amr",
-    // Documents
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
       ".docx",
@@ -292,12 +198,10 @@ function getExtension(mimetype) {
     "application/vnd.ms-powerpoint": ".ppt",
     "text/plain": ".txt",
     "text/csv": ".csv",
-    // Archives
     "application/zip": ".zip",
     "application/x-rar-compressed": ".rar",
     "application/x-7z-compressed": ".7z",
     "application/gzip": ".gz",
-    // Other
     "application/json": ".json",
     "application/octet-stream": ".bin",
     "application/vnd.android.package-archive": ".apk",
@@ -308,14 +212,13 @@ function getExtension(mimetype) {
 }
 
 // ─── Save media to temp folder ──────────────────────────
-const MAX_MEDIA_SIZE_MB = 10; // Skip media larger than 10MB to save memory
+const MAX_MEDIA_SIZE_MB = 10;
 async function saveMediaToTemp(msg) {
   try {
     if (!msg.hasMedia) return null;
     const media = await msg.downloadMedia();
     if (!media || !media.data) return null;
 
-    // Skip large files to prevent memory spikes
     const sizeBytes = Buffer.byteLength(media.data, "base64");
     if (sizeBytes > MAX_MEDIA_SIZE_MB * 1024 * 1024) {
       console.log(
@@ -359,30 +262,24 @@ async function saveMediaToTemp(msg) {
   }
 }
 
+// ─── Save deleted message record as JSON file ───────────
+function saveDeletedRecord(data) {
+  try {
+    const timestamp = Date.now();
+    const safeName = (data.senderName || "unknown")
+      .replace(/[^a-zA-Z0-9]/g, "_")
+      .substring(0, 20);
+    const filename = `deleted_${timestamp}_${safeName}.json`;
+    const filePath = path.join(SAVED_MEDIA_DIR, filename);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+    console.log(`📝 Deleted record saved: ${filename}`);
+  } catch (err) {
+    console.error("Error saving deleted record:", err.message);
+  }
+}
+
 // ─── Client Setup ────────────────────────────────────────
 async function start() {
-  // Connect to MongoDB for session persistence
-  console.log("🔗 [MONGO] Connecting to MongoDB...");
-  try {
-    await mongoose.connect(process.env.MONGODB_URI);
-    console.log("✅ [MONGO] Connected to MongoDB successfully");
-  } catch (err) {
-    console.error("❌ [MONGO] MongoDB connection FAILED:", err.message);
-    process.exit(1);
-  }
-
-  mongoose.connection.on("error", (err) => {
-    console.error("❌ [MONGO] MongoDB connection error:", err.message);
-  });
-  mongoose.connection.on("disconnected", () => {
-    console.warn("⚠️ [MONGO] MongoDB disconnected");
-  });
-  mongoose.connection.on("reconnected", () => {
-    console.log("🔗 [MONGO] MongoDB reconnected");
-  });
-
-  const store = new MongoStore({ mongoose });
-
   // ─── Startup cleanup: remove expired temp media files ──
   try {
     const now = Date.now();
@@ -407,15 +304,14 @@ async function start() {
   console.log("🌐 [CHROME] Launching Chrome browser via Puppeteer...");
 
   const client = new Client({
-    authStrategy: new RemoteAuth({
+    authStrategy: new LocalAuth({
       clientId: "wa-agent",
-      store: store,
-      backupSyncIntervalMs: 300000, // backup session every 5 min (reduces memory spikes)
+      dataPath: path.join(__dirname, ".wwebjs_auth"),
     }),
-    authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
-    qrMaxRetries: 5, // give up after 5 QR rotations (~100 seconds)
+    authTimeoutMs: 120000,
+    qrMaxRetries: 5,
     puppeteer: {
-      headless: "shell", // lightweight headless mode (~100-150MB less than full Chrome)
+      headless: "shell",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -448,15 +344,10 @@ async function start() {
   // ─── WhatsApp Connection Lifecycle Logging ───────────────
   let qrCount = 0;
 
-  client.on("remote_session_saved", () => {
-    console.log("💾 [AUTH] Session saved to MongoDB successfully");
-  });
-
   client.on("qr", async (qr) => {
     qrCount++;
     console.log(`\n📱 [QR] New QR code generated (attempt ${qrCount}/5)`);
 
-    // Send EVERY QR to Telegram so user always has a fresh one to scan
     try {
       const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
       const blob = new Blob([qrBuffer], { type: "image/png" });
@@ -481,14 +372,14 @@ async function start() {
       console.error("[QR] QR image send error:", err);
       await sendPushNotification(
         "📱 QR Code Needed",
-        `QR code #${qrCount} was generated but couldn't be sent as image. Check Render logs.`,
+        `QR code #${qrCount} was generated but couldn't be sent as image. Check logs.`,
       );
     }
   });
 
   client.on("authenticated", () => {
     console.log(
-      "✅ [AUTH] WhatsApp authenticated successfully! Waiting for session to load...",
+      "✅ [AUTH] WhatsApp authenticated successfully! Session saved locally.",
     );
   });
 
@@ -526,7 +417,6 @@ async function start() {
       `Bot is now connected and ready.\nTime: ${getIST()}`,
     );
 
-    // Set ready timestamp for startup grace period
     readyTimestamp = Date.now();
     console.log(
       `⏳ Startup grace period: ignoring old revocations for ${STARTUP_GRACE_MS / 1000}s`,
@@ -571,34 +461,12 @@ async function start() {
               );
             }
 
-            // Upload to MongoDB GridFS
-            let mediaFileId = null;
-            const viewOnceData = readMediaAsBase64(tracked.filePath);
-            if (viewOnceData) {
-              mediaFileId = await uploadMediaToGridFS(
-                viewOnceData,
-                tracked.mimetype,
-                tracked.filename,
-              );
-            }
-
-            // Save record to MongoDB
-            await DeletedMessage.create({
-              time,
-              where: chatLocation,
-              senderName,
-              senderNumber: senderActualNumber,
-              originalMessage: `[👁️ VIEW-ONCE] ${messageBody || "[media]"}`,
-              sentTime: getIST(new Date(msg.timestamp * 1000)),
-              mediaFilename: tracked.filename,
-              mediaFileId: mediaFileId || undefined,
-            });
-
             // Send to Telegram
             await sendPushNotification(
               `👁️ View-Once from ${senderName}`,
               `Where: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nTime: ${time}\nMessage: ${messageBody || "[media]"}`,
             );
+            const viewOnceData = readMediaAsBase64(tracked.filePath);
             if (viewOnceData) {
               await sendTelegramMedia(
                 viewOnceData,
@@ -614,7 +482,6 @@ async function start() {
       }
 
       const logEntry = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nMessage: ${messageBody}${mediaRef}\n------------------------------\n`;
-
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
       // Save message as .txt file in media/temp (for delete-for-everyone recovery)
@@ -640,7 +507,7 @@ async function start() {
           }
         }, DELETE_WINDOW_MS);
 
-        // Store timeout for cleanup on delete
+        // Store in tracker
         if (!mediaTracker.has(msg.id._serialized)) {
           mediaTracker.set(msg.id._serialized, {
             msgFilePath,
@@ -673,11 +540,10 @@ async function start() {
     }
   });
 
-  // ─── Also cache messages from message_create (catches outgoing too) ──
+  // ─── Also cache messages from message_create ──
   client.on("message_create", async (msg) => {
     try {
-      if (msg.fromMe) return; // skip our own messages
-      // Just ensure it's cached (the main handler above may not cache all messages)
+      if (msg.fromMe) return;
       if (!messageCache.has(msg.id._serialized)) {
         const chat = await msg.getChat();
         const contact = await msg.getContact();
@@ -690,15 +556,8 @@ async function start() {
         });
       }
     } catch (err) {
-      // Silently ignore — this is just a backup cache
+      // Silently ignore — backup cache
     }
-  });
-
-  // ─── Backup: message_revoke_me (catches some revocations the other handler misses) ──
-  client.on("message_revoke_me", async (msg) => {
-    console.log(
-      `🗑️ [REVOKE_ME] message_revoke_me fired! type=${msg.type}, id=${msg.id?._serialized}`,
-    );
   });
 
   // ─── Delete-for-Everyone Detection ──────────────────────
@@ -708,13 +567,13 @@ async function start() {
       `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${msgId_dedup}, beforeMsg=${!!beforeMsg}`,
     );
 
-    // Skip during startup grace period (old synced revocations)
+    // Skip during startup grace period
     if (Date.now() - readyTimestamp < STARTUP_GRACE_MS) {
       console.log(`⏩ Skipping (startup grace period): ${msgId_dedup}`);
       return;
     }
 
-    // Skip duplicates (backup listener may fire same event twice)
+    // Skip duplicates
     if (processedRevokes.has(msgId_dedup)) {
       console.log(`⏩ Skipping duplicate: ${msgId_dedup}`);
       return;
@@ -765,7 +624,7 @@ async function start() {
         if (chatLocation === "Unknown Chat") chatLocation = cached.chatLocation;
       }
 
-      // Check if we have temp media saved for this message
+      // Check if we have temp media/message files for this message
       const tracked = mediaTracker.get(msgId);
       let mediaRef = "";
 
@@ -796,7 +655,7 @@ async function start() {
         }
       }
 
-      // Also check cache for msgFilePath (text-only messages without media)
+      // Also check cache for msgFilePath (text-only messages without media tracker entry)
       if (!tracked && cached && cached.msgFilePath) {
         try {
           const txtBasename = path.basename(cached.msgFilePath);
@@ -816,26 +675,8 @@ async function start() {
       const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save deleted message media to MongoDB GridFS
-      let mediaFileId = null;
-      if (tracked && tracked.filePath) {
-        // Read from saved location if moved, otherwise temp
-        const mediaPath = fs.existsSync(
-          path.join(SAVED_MEDIA_DIR, tracked.filename),
-        )
-          ? path.join(SAVED_MEDIA_DIR, tracked.filename)
-          : tracked.filePath;
-        const mediaBase64 = readMediaAsBase64(mediaPath);
-        if (mediaBase64) {
-          mediaFileId = await uploadMediaToGridFS(
-            mediaBase64,
-            tracked.mimetype,
-            tracked.filename,
-          );
-        }
-      }
-
-      await DeletedMessage.create({
+      // Save deleted record as JSON file in media/saved
+      saveDeletedRecord({
         time,
         where: chatLocation,
         senderName,
@@ -849,7 +690,6 @@ async function start() {
               : "Unknown",
         mediaFilename:
           tracked && tracked.filename ? tracked.filename : undefined,
-        mediaFileId: mediaFileId || undefined,
       });
 
       console.log(`🗑️ Delete detected: ${chatLocation} - ${senderName}`);
@@ -892,7 +732,6 @@ async function start() {
       messageCache.delete(msgId);
     } catch (err) {
       console.error("Delete detection error:", err);
-      // Last resort: try to send a basic notification even if everything else failed
       try {
         await sendPushNotification(
           "🗑️ Message Deleted",
@@ -909,7 +748,6 @@ async function start() {
     console.log(`\n${signal} received. Shutting down gracefully...`);
     try {
       await client.destroy();
-      await mongoose.disconnect();
       console.log("👋 Cleanup complete. Bye!");
     } catch (e) {
       console.error("Shutdown error:", e);
@@ -930,7 +768,6 @@ async function start() {
       "❌ Init Failed",
       `WhatsApp client.initialize() failed:\n${msg}`,
     );
-    // If auth timeout, retry once after a delay
     if (msg.includes("auth timeout") || msg.includes("timeout")) {
       console.log("🔄 [INIT] Retrying client.initialize() in 10 seconds...");
       setTimeout(() => {
