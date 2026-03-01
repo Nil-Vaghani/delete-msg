@@ -1,5 +1,4 @@
 const { Client, LocalAuth } = require("whatsapp-web.js");
-const QRCode = require("qrcode");
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
@@ -13,23 +12,50 @@ function getIST(date) {
 
 // ─── Prevent crash from unhandled promise rejections ──
 process.on("unhandledRejection", (reason, promise) => {
-  console.error(
-    "⚠️ [UNHANDLED] Promise rejection (caught by handler):",
-    reason,
-  );
+  console.error("⚠️ [UNHANDLED] Promise rejection:", reason);
 });
 
 // ─── Validate Environment Variables ─────────────────────
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const WA_PHONE_NUMBER = process.env.WA_PHONE_NUMBER;
 
 if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-  console.warn(
-    "⚠️ Telegram credentials missing — notifications will be disabled.",
-  );
+  console.error("❌ TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.");
+  process.exit(1);
+}
+if (!WA_PHONE_NUMBER) {
+  console.error("❌ WA_PHONE_NUMBER is required for pairing code auth.");
+  process.exit(1);
 }
 
-// ─── Push Notification via Telegram Bot ──────────────────
+// ─── Constants ──────────────────────────────────────────
+const AUTH_DATA_PATH = path.join(__dirname, ".wwebjs_auth");
+const TEMP_MEDIA_DIR = path.join(__dirname, "media", "temp");
+const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
+const DELETE_WINDOW_MS = 68 * 60 * 60 * 1000; // 68 hours
+const MAX_CACHE_SIZE = 500;
+const MESSAGE_CACHE_TTL_MS = DELETE_WINDOW_MS;
+const STARTUP_GRACE_MS = 30 * 1000;
+const REVOKE_DEDUP_TTL_MS = 60 * 1000;
+const MAX_MEDIA_SIZE_MB = 10;
+
+// ─── Ensure directories ─────────────────────────────────
+[TEMP_MEDIA_DIR, SAVED_MEDIA_DIR].forEach((dir) => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+// ─── State ──────────────────────────────────────────────
+let currentClient = null;
+let pairingCodeSent = false;
+let readyTimestamp = 0;
+const messageCache = new Map();
+const mediaTracker = new Map();
+const processedRevokes = new Set();
+let telegramPollingActive = true;
+let telegramUpdateOffset = 0;
+
+// ─── Telegram Helpers ───────────────────────────────────
 
 function escapeHTML(text) {
   return text
@@ -44,7 +70,6 @@ async function sendPushNotification(title, body) {
     const safeBody = escapeHTML(body);
     const text = `<b>${safeTitle}</b>\n\n${safeBody}`;
 
-    // Try with HTML parse mode first
     let res = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
@@ -52,27 +77,20 @@ async function sendPushNotification(title, body) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: TELEGRAM_CHAT_ID,
-          text: text,
+          text,
           parse_mode: "HTML",
         }),
       },
     );
 
-    // Fallback: retry as plain text if HTML parsing fails
     if (!res.ok) {
-      console.warn(
-        `Telegram HTML parse failed (${res.status}), retrying as plain text...`,
-      );
       const plainText = `${title}\n\n${body}`;
       res = await fetch(
         `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: TELEGRAM_CHAT_ID,
-            text: plainText,
-          }),
+          body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: plainText }),
         },
       );
     }
@@ -111,27 +129,7 @@ async function sendTelegramMedia(base64data, mimetype, filename, caption) {
   }
 }
 
-// ─── Media Directories ──────────────────────────────────
-const TEMP_MEDIA_DIR = path.join(__dirname, "media", "temp");
-const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
-
-[TEMP_MEDIA_DIR, SAVED_MEDIA_DIR].forEach((dir) => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
-
-// ─── Message Cache (for delete-for-everyone detection) ────────
-const messageCache = new Map();
-const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000;
-const MAX_CACHE_SIZE = 500;
-
-// Dedup set for revoke events (prevents processing same deletion twice)
-const processedRevokes = new Set();
-const REVOKE_DEDUP_TTL_MS = 60 * 1000;
-
-// Startup grace period — ignore old revocations synced on connect
-let readyTimestamp = 0;
-const STARTUP_GRACE_MS = 30 * 1000;
-
+// ─── Message Cache ──────────────────────────────────────
 function cacheMessage(msgId, data) {
   if (messageCache.size >= MAX_CACHE_SIZE) {
     const oldestKey = messageCache.keys().next().value;
@@ -141,11 +139,8 @@ function cacheMessage(msgId, data) {
   setTimeout(() => messageCache.delete(msgId), MESSAGE_CACHE_TTL_MS);
 }
 
-// ─── Media Tracker (for delete-for-everyone detection) ──
-// Key: msg serialized ID → { filePath, filename, timeout, mimetype, msgFilePath, ... }
-const mediaTracker = new Map();
+// ─── Helpers ────────────────────────────────────────────
 
-// ─── Helper: Read media from disk as base64 ─────────────
 function readMediaAsBase64(filePath) {
   try {
     if (fs.existsSync(filePath)) {
@@ -157,10 +152,6 @@ function readMediaAsBase64(filePath) {
   return null;
 }
 
-// WhatsApp "Delete for Everyone" window ≈ 68 hours
-const DELETE_WINDOW_MS = 68 * 60 * 60 * 1000;
-
-// ─── Helper: mimetype → file extension ──────────────────
 function getExtension(mimetype) {
   const map = {
     "image/jpeg": ".jpg",
@@ -211,8 +202,6 @@ function getExtension(mimetype) {
   return "." + sub;
 }
 
-// ─── Save media to temp folder ──────────────────────────
-const MAX_MEDIA_SIZE_MB = 10;
 async function saveMediaToTemp(msg) {
   try {
     if (!msg.hasMedia) return null;
@@ -222,7 +211,7 @@ async function saveMediaToTemp(msg) {
     const sizeBytes = Buffer.byteLength(media.data, "base64");
     if (sizeBytes > MAX_MEDIA_SIZE_MB * 1024 * 1024) {
       console.log(
-        `⚠️ Skipping large media (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > ${MAX_MEDIA_SIZE_MB}MB limit)`,
+        `⚠️ Skipping large media (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > ${MAX_MEDIA_SIZE_MB}MB)`,
       );
       return null;
     }
@@ -234,7 +223,6 @@ async function saveMediaToTemp(msg) {
 
     fs.writeFileSync(filePath, Buffer.from(media.data, "base64"));
 
-    // Auto-delete after delete window expires
     const timeout = setTimeout(() => {
       try {
         if (fs.existsSync(filePath)) {
@@ -262,7 +250,6 @@ async function saveMediaToTemp(msg) {
   }
 }
 
-// ─── Save deleted message record as JSON file ───────────
 function saveDeletedRecord(data) {
   try {
     const timestamp = Date.now();
@@ -278,38 +265,96 @@ function saveDeletedRecord(data) {
   }
 }
 
-// ─── Client Setup ────────────────────────────────────────
-async function start() {
-  // ─── Startup cleanup: remove expired temp media files ──
-  try {
-    const now = Date.now();
-    const tempFiles = fs.readdirSync(TEMP_MEDIA_DIR);
-    let cleaned = 0;
-    for (const file of tempFiles) {
-      const filePath = path.join(TEMP_MEDIA_DIR, file);
-      const stat = fs.statSync(filePath);
-      if (now - stat.mtimeMs > DELETE_WINDOW_MS) {
-        fs.unlinkSync(filePath);
-        cleaned++;
-      }
-    }
-    if (cleaned > 0)
-      console.log(
-        `🧹 Startup cleanup: removed ${cleaned} expired temp file(s)`,
-      );
-  } catch (err) {
-    console.error("Startup temp cleanup error:", err.message);
-  }
+// ─── Telegram Bot Command Polling ───────────────────────
+async function pollTelegramCommands() {
+  console.log(
+    "🤖 Telegram bot command polling started. Send /reauth to re-authenticate.",
+  );
 
-  console.log("🌐 [CHROME] Launching Chrome browser via Puppeteer...");
+  while (telegramPollingActive) {
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${telegramUpdateOffset}&timeout=30&allowed_updates=["message"]`,
+      );
+      const data = await res.json();
+      if (data.ok && data.result.length > 0) {
+        for (const update of data.result) {
+          telegramUpdateOffset = update.update_id + 1;
+          const text = update.message?.text?.trim();
+          const chatId = String(update.message?.chat?.id);
+
+          // Only accept commands from the authorized chat
+          if (chatId !== TELEGRAM_CHAT_ID) continue;
+
+          if (text === "/reauth") {
+            console.log("🔄 /reauth command received from Telegram");
+            await handleReauth();
+          } else if (text === "/status") {
+            const status = currentClient?.info
+              ? `✅ Connected as ${currentClient.info.pushname}`
+              : "❌ Not connected";
+            await sendPushNotification(
+              "📊 Status",
+              `${status}\nTime: ${getIST()}\nCache: ${messageCache.size} messages\nMedia tracked: ${mediaTracker.size}`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      // Polling error — retry after delay
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
+// ─── Reauth Handler ─────────────────────────────────────
+async function handleReauth() {
+  try {
+    await sendPushNotification(
+      "🔄 Re-authenticating",
+      "Clearing old session and requesting new pairing code...",
+    );
+
+    // Destroy current client
+    if (currentClient) {
+      try {
+        await currentClient.destroy();
+      } catch (e) {
+        console.error("Client destroy error (ignored):", e.message);
+      }
+      currentClient = null;
+    }
+
+    // Delete auth data
+    const sessionPath = path.join(AUTH_DATA_PATH, "session-wa-agent");
+    if (fs.existsSync(sessionPath)) {
+      fs.rmSync(sessionPath, { recursive: true, force: true });
+      console.log("🗑️ Old auth session deleted");
+    }
+
+    // Start fresh client
+    await startClient();
+  } catch (err) {
+    console.error("Reauth error:", err);
+    await sendPushNotification("❌ Reauth Failed", `Error: ${err.message}`);
+  }
+}
+
+// ─── Create WhatsApp Client with all event handlers ─────
+function createClient() {
+  pairingCodeSent = false;
 
   const client = new Client({
     authStrategy: new LocalAuth({
       clientId: "wa-agent",
-      dataPath: path.join(__dirname, ".wwebjs_auth"),
+      dataPath: AUTH_DATA_PATH,
     }),
+    pairWithPhoneNumber: {
+      phoneNumber: WA_PHONE_NUMBER,
+      showNotification: true,
+      intervalMs: 86400000, // 24h — effectively no auto-retry (user must /reauth)
+    },
     authTimeoutMs: 120000,
-    qrMaxRetries: 5,
     puppeteer: {
       headless: "shell",
       args: [
@@ -339,55 +384,24 @@ async function start() {
     },
   });
 
-  console.log("🌐 [CHROME] Client created, initializing WhatsApp Web...");
-
-  // ─── WhatsApp Connection Lifecycle Logging ───────────────
-  let qrCount = 0;
-
-  client.on("qr", async (qr) => {
-    qrCount++;
-    console.log(`\n📱 [QR] New QR code generated (attempt ${qrCount}/5)`);
-
-    try {
-      const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
-      const blob = new Blob([qrBuffer], { type: "image/png" });
-      const formData = new FormData();
-      formData.append("chat_id", TELEGRAM_CHAT_ID);
-      formData.append(
-        "caption",
-        `📱 QR Code (attempt ${qrCount}/5)\n⏱️ Scan within ~20 seconds!\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR`,
-      );
-      formData.append("photo", blob, "qr-code.png");
-      const res = await fetch(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
-        { method: "POST", body: formData },
-      );
-      if (!res.ok) {
-        const errBody = await res.text();
-        console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
-      } else {
-        console.log(`📱 [QR] QR code #${qrCount} sent to Telegram`);
-      }
-    } catch (err) {
-      console.error("[QR] QR image send error:", err);
-      await sendPushNotification(
-        "📱 QR Code Needed",
-        `QR code #${qrCount} was generated but couldn't be sent as image. Check logs.`,
-      );
-    }
+  // ─── Pairing Code Auth (replaces QR scanning) ──────────
+  client.on("code", async (code) => {
+    console.log(`🔑 Pairing code received: ${code}`);
+    await sendPushNotification(
+      "🔑 WhatsApp Pairing Code",
+      `Your code: ${code}\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number\n\nEnter this code when prompted.\n\n⚠️ Code expires in ~20 seconds. If it expires, send /reauth to get a new one.`,
+    );
   });
 
   client.on("authenticated", () => {
-    console.log(
-      "✅ [AUTH] WhatsApp authenticated successfully! Session saved locally.",
-    );
+    console.log("✅ [AUTH] WhatsApp authenticated! Session saved locally.");
   });
 
   client.on("auth_failure", async (message) => {
     console.error(`❌ [AUTH] Authentication FAILED: ${message}`);
     await sendPushNotification(
       "❌ Auth Failed",
-      `WhatsApp authentication failed:\n${message}\n\nA new QR code will be generated.`,
+      `Authentication failed: ${message}\n\nSend /reauth to try again.`,
     );
   });
 
@@ -399,28 +413,24 @@ async function start() {
     console.error(`🔌 [DISCONNECTED] WhatsApp disconnected: ${reason}`);
     await sendPushNotification(
       "🔌 Disconnected",
-      `WhatsApp disconnected.\nReason: ${reason}\n\nThe bot will try to reconnect.`,
+      `WhatsApp disconnected: ${reason}\n\nSend /reauth to reconnect.`,
     );
   });
 
   client.on("change_state", (state) => {
-    console.log(`🔄 [STATE] WhatsApp connection state changed: ${state}`);
+    console.log(`🔄 [STATE] Connection state: ${state}`);
   });
 
   client.on("ready", async () => {
-    console.log(
-      "\n✅ [READY] WhatsApp connected & ready! Logging all incoming messages.",
-    );
+    console.log("\n✅ [READY] WhatsApp connected & ready!");
     console.log(`✅ [READY] Logged in at: ${getIST()}`);
     await sendPushNotification(
       "✅ WhatsApp Connected",
-      `Bot is now connected and ready.\nTime: ${getIST()}`,
+      `Bot is now connected and ready.\nTime: ${getIST()}\n\nCommands:\n/status — Check bot status\n/reauth — Re-authenticate`,
     );
 
     readyTimestamp = Date.now();
-    console.log(
-      `⏳ Startup grace period: ignoring old revocations for ${STARTUP_GRACE_MS / 1000}s`,
-    );
+    console.log(`⏳ Startup grace period: ${STARTUP_GRACE_MS / 1000}s`);
   });
 
   // ─── Incoming Messages ──────────────────────────────────
@@ -436,7 +446,7 @@ async function start() {
         ? `Group: ${chat.name}`
         : "Private Chat";
 
-      // Save media temporarily (for delete-for-everyone capture)
+      // Save media temporarily
       let mediaRef = "";
       if (msg.hasMedia) {
         const filename = await saveMediaToTemp(msg);
@@ -452,16 +462,12 @@ async function start() {
         try {
           const tracked = mediaTracker.get(msg.id._serialized);
           if (tracked) {
-            // Save to permanent folder
             const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
             if (fs.existsSync(tracked.filePath)) {
               fs.copyFileSync(tracked.filePath, savedPath);
-              console.log(
-                `🔒 View-once media saved permanently: ${tracked.filename}`,
-              );
+              console.log(`🔒 View-once saved: ${tracked.filename}`);
             }
 
-            // Send to Telegram
             await sendPushNotification(
               `👁️ View-Once from ${senderName}`,
               `Where: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nTime: ${time}\nMessage: ${messageBody || "[media]"}`,
@@ -472,7 +478,7 @@ async function start() {
                 viewOnceData,
                 tracked.mimetype,
                 tracked.filename,
-                `👁️ View-once media from ${senderName} (${senderActualNumber})\nIn: ${chatLocation}`,
+                `👁️ View-once from ${senderName} (${senderActualNumber})\nIn: ${chatLocation}`,
               );
             }
           }
@@ -481,10 +487,11 @@ async function start() {
         }
       }
 
+      // Log to file
       const logEntry = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nMessage: ${messageBody}${mediaRef}\n------------------------------\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save message as .txt file in media/temp (for delete-for-everyone recovery)
+      // Save message as .txt file in media/temp
       let msgFilePath = null;
       try {
         const timestamp = Date.now();
@@ -496,18 +503,14 @@ async function start() {
         const fileContent = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nSent: ${getIST(new Date(msg.timestamp * 1000))}\nMessage: ${messageBody}${mediaRef ? `\nMedia: ${mediaRef.trim().replace("Media: ", "")}` : ""}`;
         fs.writeFileSync(msgFilePath, fileContent, "utf8");
 
-        // Auto-delete after 68h window
         const msgFileTimeout = setTimeout(() => {
           try {
-            if (fs.existsSync(msgFilePath)) {
-              fs.unlinkSync(msgFilePath);
-            }
+            if (fs.existsSync(msgFilePath)) fs.unlinkSync(msgFilePath);
           } catch (e) {
-            /* ignore cleanup errors */
+            /* ignore */
           }
         }, DELETE_WINDOW_MS);
 
-        // Store in tracker
         if (!mediaTracker.has(msg.id._serialized)) {
           mediaTracker.set(msg.id._serialized, {
             msgFilePath,
@@ -524,7 +527,7 @@ async function start() {
         console.error("Error saving message file:", fileErr.message);
       }
 
-      // Cache message for delete-for-everyone detection
+      // Cache message
       cacheMessage(msg.id._serialized, {
         body: messageBody,
         senderName,
@@ -540,7 +543,7 @@ async function start() {
     }
   });
 
-  // ─── Also cache messages from message_create ──
+  // ─── Backup cache from message_create ──
   client.on("message_create", async (msg) => {
     try {
       if (msg.fromMe) return;
@@ -556,24 +559,20 @@ async function start() {
         });
       }
     } catch (err) {
-      // Silently ignore — backup cache
+      // Silently ignore
     }
   });
 
   // ─── Delete-for-Everyone Detection ──────────────────────
   client.on("message_revoke_everyone", async (afterMsg, beforeMsg) => {
     const msgId_dedup = afterMsg?.id?._serialized;
-    console.log(
-      `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${msgId_dedup}, beforeMsg=${!!beforeMsg}`,
-    );
+    console.log(`🗑️ [DELETE] msgId=${msgId_dedup}, beforeMsg=${!!beforeMsg}`);
 
-    // Skip during startup grace period
     if (Date.now() - readyTimestamp < STARTUP_GRACE_MS) {
-      console.log(`⏩ Skipping (startup grace period): ${msgId_dedup}`);
+      console.log(`⏩ Skipping (startup grace): ${msgId_dedup}`);
       return;
     }
 
-    // Skip duplicates
     if (processedRevokes.has(msgId_dedup)) {
       console.log(`⏩ Skipping duplicate: ${msgId_dedup}`);
       return;
@@ -589,34 +588,30 @@ async function start() {
         const chat = await afterMsg.getChat();
         chatLocation = chat.isGroup ? `Group: ${chat.name}` : "Private Chat";
       } catch (chatErr) {
-        console.error("Could not get chat for deleted msg:", chatErr.message);
+        console.error("Could not get chat:", chatErr.message);
       }
 
       let senderName = "Unknown";
       let senderNumber = "Unknown";
       let originalText = "[Unknown - message not cached]";
 
-      // Try whatsapp-web.js cache first
       if (beforeMsg) {
         try {
           const contact = await beforeMsg.getContact();
           senderName = contact.name || contact.pushname || contact.number;
           senderNumber = contact.number;
         } catch (e) {
-          console.warn("Could not get contact from beforeMsg:", e.message);
+          console.warn("Could not get contact:", e.message);
         }
         originalText = beforeMsg.body || "[<empty>]";
       }
 
-      // Fallback: check our manual message cache
       const msgId = beforeMsg
         ? beforeMsg.id._serialized
         : afterMsg.id._serialized;
       const cached = messageCache.get(msgId);
       if (cached) {
-        console.log(
-          `📋 Found message in manual cache: ${cached.body?.substring(0, 50)}...`,
-        );
+        console.log(`📋 Cache hit: ${cached.body?.substring(0, 50)}...`);
         if (senderName === "Unknown") senderName = cached.senderName;
         if (senderNumber === "Unknown") senderNumber = cached.senderNumber;
         if (originalText === "[Unknown - message not cached]")
@@ -624,47 +619,38 @@ async function start() {
         if (chatLocation === "Unknown Chat") chatLocation = cached.chatLocation;
       }
 
-      // Check if we have temp media/message files for this message
+      // Move files from temp to saved
       const tracked = mediaTracker.get(msgId);
       let mediaRef = "";
 
       if (tracked) {
-        // Move media file to saved
         if (tracked.filePath) {
           clearTimeout(tracked.timeout);
           const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
           if (fs.existsSync(tracked.filePath)) {
             fs.renameSync(tracked.filePath, savedPath);
             mediaRef = `\nSaved Media: media/saved/${tracked.filename}`;
-            console.log(
-              `🔒 Permanently saved deleted media: ${tracked.filename}`,
-            );
+            console.log(`🔒 Saved deleted media: ${tracked.filename}`);
           }
         }
-
-        // Move message .txt file to saved
         if (tracked.msgFilePath) {
           clearTimeout(tracked.msgFileTimeout);
           const savedMsgPath = path.join(SAVED_MEDIA_DIR, tracked.msgFilename);
           if (fs.existsSync(tracked.msgFilePath)) {
             fs.renameSync(tracked.msgFilePath, savedMsgPath);
-            console.log(
-              `🔒 Permanently saved deleted message file: ${tracked.msgFilename}`,
-            );
+            console.log(`🔒 Saved deleted msg file: ${tracked.msgFilename}`);
           }
         }
       }
 
-      // Also check cache for msgFilePath (text-only messages without media tracker entry)
+      // Text-only fallback
       if (!tracked && cached && cached.msgFilePath) {
         try {
           const txtBasename = path.basename(cached.msgFilePath);
           const savedTxtPath = path.join(SAVED_MEDIA_DIR, txtBasename);
           if (fs.existsSync(cached.msgFilePath)) {
             fs.renameSync(cached.msgFilePath, savedTxtPath);
-            console.log(
-              `🔒 Permanently saved deleted message file: ${txtBasename}`,
-            );
+            console.log(`🔒 Saved deleted msg file: ${txtBasename}`);
           }
         } catch (moveErr) {
           console.error("Error moving message file:", moveErr.message);
@@ -672,10 +658,10 @@ async function start() {
       }
 
       // Log to file
-      const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
+      const logEntry = `\n🗑️ DELETED MESSAGE\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save deleted record as JSON file in media/saved
+      // Save deleted record
       saveDeletedRecord({
         time,
         where: chatLocation,
@@ -694,7 +680,7 @@ async function start() {
 
       console.log(`🗑️ Delete detected: ${chatLocation} - ${senderName}`);
 
-      // ── Push notification via Telegram ──
+      // Telegram notification
       let ntfySentTime = "Unknown";
       if (beforeMsg && beforeMsg.timestamp) {
         ntfySentTime = getIST(new Date(beforeMsg.timestamp * 1000));
@@ -707,7 +693,7 @@ async function start() {
         `Where: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nSent: ${ntfySentTime}\nDeleted: ${time}\nMessage: ${originalText}`,
       );
 
-      // Send deleted media to Telegram if available
+      // Send deleted media to Telegram
       if (tracked && tracked.filePath) {
         const tgMediaPath = fs.existsSync(
           path.join(SAVED_MEDIA_DIR, tracked.filename),
@@ -725,30 +711,29 @@ async function start() {
         }
       }
 
-      // Clean up tracker and cache
-      if (tracked) {
-        mediaTracker.delete(msgId);
-      }
+      // Cleanup
+      if (tracked) mediaTracker.delete(msgId);
       messageCache.delete(msgId);
     } catch (err) {
       console.error("Delete detection error:", err);
       try {
         await sendPushNotification(
           "🗑️ Message Deleted",
-          `A message was deleted for everyone but details could not be retrieved.\nError: ${err.message}`,
+          `A message was deleted but details could not be retrieved.\nError: ${err.message}`,
         );
       } catch (e) {
-        console.error("Even fallback notification failed:", e);
+        console.error("Fallback notification failed:", e);
       }
     }
   });
 
   // ─── Graceful Shutdown ─────────────────────────────────
   const shutdown = async (signal) => {
-    console.log(`\n${signal} received. Shutting down gracefully...`);
+    console.log(`\n${signal} received. Shutting down...`);
+    telegramPollingActive = false;
     try {
       await client.destroy();
-      console.log("👋 Cleanup complete. Bye!");
+      console.log("👋 Bye!");
     } catch (e) {
       console.error("Shutdown error:", e);
     }
@@ -757,34 +742,57 @@ async function start() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  console.log(
-    "🚀 [INIT] Calling client.initialize() — Chrome will open and WhatsApp Web will load...",
-  );
-  client.initialize().catch(async (err) => {
-    const msg = typeof err === "string" ? err : err?.message || String(err);
-    console.error("❌ [INIT] client.initialize() FAILED:", msg);
-    if (err?.stack) console.error(err.stack);
-    await sendPushNotification(
-      "❌ Init Failed",
-      `WhatsApp client.initialize() failed:\n${msg}`,
-    );
-    if (msg.includes("auth timeout") || msg.includes("timeout")) {
-      console.log("🔄 [INIT] Retrying client.initialize() in 10 seconds...");
-      setTimeout(() => {
-        client.initialize().catch((retryErr) => {
-          console.error(
-            "❌ [INIT] Retry also failed:",
-            retryErr?.message || retryErr,
-          );
-        });
-      }, 10000);
-    }
-  });
-
-  console.log("✅ WhatsApp Agent started via PM2.");
+  return client;
 }
 
-start().catch((err) => {
+// ─── Start Client ───────────────────────────────────────
+async function startClient() {
+  // Startup cleanup: remove expired temp files
+  try {
+    const now = Date.now();
+    const tempFiles = fs.readdirSync(TEMP_MEDIA_DIR);
+    let cleaned = 0;
+    for (const file of tempFiles) {
+      const filePath = path.join(TEMP_MEDIA_DIR, file);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > DELETE_WINDOW_MS) {
+        fs.unlinkSync(filePath);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} expired temp file(s)`);
+  } catch (err) {
+    console.error("Temp cleanup error:", err.message);
+  }
+
+  console.log("🌐 Launching Chrome...");
+  currentClient = createClient();
+
+  console.log("🚀 Initializing WhatsApp Web...");
+  currentClient.initialize().catch(async (err) => {
+    const msg = typeof err === "string" ? err : err?.message || String(err);
+    console.error("❌ Initialize failed:", msg);
+    await sendPushNotification(
+      "❌ Init Failed",
+      `WhatsApp failed to start: ${msg}\n\nSend /reauth to try again.`,
+    );
+  });
+}
+
+// ─── Main Entry Point ───────────────────────────────────
+async function main() {
+  console.log("🤖 WhatsApp Agent starting...");
+
+  // Start Telegram command polling (runs in background)
+  pollTelegramCommands();
+
+  // Start WhatsApp client
+  await startClient();
+
+  console.log("✅ WhatsApp Agent started.");
+}
+
+main().catch((err) => {
   console.error("Startup error:", err);
   process.exit(1);
 });

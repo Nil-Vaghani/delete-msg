@@ -13,3 +13,22 @@
 2026-03-01 16:06:55:   }
 2026-03-01 16:06:55: }
 2026-03-01 16:07:45: 🔌 [DISCONNECTED] WhatsApp disconnected: Max qrcode retries reached
+2026-03-01 16:19:39: Pairing code request error: Error [TypeError]: window.onCodeReceivedEvent is not a function
+2026-03-01 16:19:39:     at evaluate (evaluate at Client.requestPairingCode (/home/nil/wa-ai-agent/node_modules/whatsapp-web.js/src/Client.js:395:35), <anonymous>:19:26)
+2026-03-01 16:19:39:     at #evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/ExecutionContext.js:391:56)
+2026-03-01 16:19:39:     at async ExecutionContext.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/ExecutionContext.js:277:16)
+2026-03-01 16:19:39:     at async IsolatedWorld.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/IsolatedWorld.js:100:16)
+2026-03-01 16:19:39:     at async CdpFrame.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/api/Frame.js:362:20)
+2026-03-01 16:19:39:     at async CdpPage.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/api/Page.js:830:20)
+2026-03-01 16:19:39:     at async Client.requestPairingCode (/home/nil/wa-ai-agent/node_modules/whatsapp-web.js/src/Client.js:395:16)
+2026-03-01 16:19:39:     at async Client.<anonymous> (/home/nil/wa-ai-agent/index.js:395:20)
+2026-03-01 16:20:04: Pairing code request error: Error [TypeError]: window.onCodeReceivedEvent is not a function
+2026-03-01 16:20:04:     at evaluate (evaluate at Client.requestPairingCode (/home/nil/wa-ai-agent/node_modules/whatsapp-web.js/src/Client.js:395:35), <anonymous>:19:26)
+2026-03-01 16:20:04:     at #evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/ExecutionContext.js:391:56)
+2026-03-01 16:20:04:     at async ExecutionContext.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/ExecutionContext.js:277:16)
+2026-03-01 16:20:04:     at async IsolatedWorld.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/IsolatedWorld.js:100:16)
+2026-03-01 16:20:04:     at async CdpFrame.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/api/Frame.js:362:20)
+2026-03-01 16:20:04:     at async CdpPage.evaluate (/home/nil/wa-ai-agent/node_modules/puppeteer-core/lib/cjs/puppeteer/api/Page.js:830:20)
+2026-03-01 16:20:04:     at async Client.requestPairingCode (/home/nil/wa-ai-agent/node_modules/whatsapp-web.js/src/Client.js:395:16)
+2026-03-01 16:20:04:     at async Client.<anonymous> (/home/nil/wa-ai-agent/index.js:395:20)
+2026-03-01 16:21:22: 🔌 [DISCONNECTED] WhatsApp disconnected: Max qrcode retries reached

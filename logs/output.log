@@ -106,3 +106,77 @@
 2026-03-01 16:09:01: ✅ [READY] Logged in at: 1/3/2026, 4:09:01 pm
 2026-03-01 16:09:02: 🔔 Telegram notification sent
 2026-03-01 16:09:02: ⏳ Startup grace period: ignoring old revocations for 30s
+2026-03-01 16:11:55: 📎 Temp media saved: 1772361715739_AC92CD6B223C59E03EC3DF8935E2CC12.jpg
+2026-03-01 16:11:55: 💾 Saved: Group: ASSC SYBCA - 3 BATCH 2024-27 - Dr. Tanvi Navik Patel
+2026-03-01 16:18:56: 
+2026-03-01 16:18:56: SIGINT received. Shutting down gracefully...
+2026-03-01 16:18:56: [dotenv@17.3.1] injecting env (3) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+2026-03-01 16:18:56: 🤖 WhatsApp Agent starting...
+2026-03-01 16:18:56: 🤖 Telegram bot command polling started. Send /reauth to re-authenticate.
+2026-03-01 16:18:57: 🌐 Launching Chrome...
+2026-03-01 16:18:57: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:18:57: ✅ WhatsApp Agent started.
+2026-03-01 16:19:02: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:19:03: 
+2026-03-01 16:19:03: ✅ [READY] WhatsApp connected & ready!
+2026-03-01 16:19:03: ✅ [READY] Logged in at: 1/3/2026, 4:19:03 pm
+2026-03-01 16:19:04: 🔔 Telegram notification sent
+2026-03-01 16:19:04: ⏳ Startup grace period: 30s
+2026-03-01 16:19:28: 🔄 /reauth command received from Telegram
+2026-03-01 16:19:29: 🔔 Telegram notification sent
+2026-03-01 16:19:29: 🗑️ Old auth session deleted
+2026-03-01 16:19:29: 🌐 Launching Chrome...
+2026-03-01 16:19:29: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:19:39: 🔑 Requesting pairing code for 916354328327...
+2026-03-01 16:19:40: 🔔 Telegram notification sent
+2026-03-01 16:19:48: 🔔 Telegram notification sent
+2026-03-01 16:19:52: 🔄 /reauth command received from Telegram
+2026-03-01 16:19:53: 🔔 Telegram notification sent
+2026-03-01 16:19:53: 🗑️ Old auth session deleted
+2026-03-01 16:19:53: 🌐 Launching Chrome...
+2026-03-01 16:19:53: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:20:03: 🔑 Requesting pairing code for 916354328327...
+2026-03-01 16:20:04: 🔔 Telegram notification sent
+2026-03-01 16:21:02: ⏩ Pairing code already sent, waiting for user to enter it...
+2026-03-01 16:21:22: ⏩ Pairing code already sent, waiting for user to enter it...
+2026-03-01 16:21:24: 🔔 Telegram notification sent
+2026-03-01 16:23:48: 
+2026-03-01 16:23:48: SIGINT received. Shutting down...
+2026-03-01 16:23:48: 
+2026-03-01 16:23:48: SIGINT received. Shutting down...
+2026-03-01 16:23:48: 
+2026-03-01 16:23:48: SIGINT received. Shutting down...
+2026-03-01 16:23:48: 👋 Bye!
+2026-03-01 16:23:49: [dotenv@17.3.1] injecting env (3) from .env -- tip: ⚙️  load multiple .env files with { path: ['.env.local', '.env'] }
+2026-03-01 16:23:49: 🤖 WhatsApp Agent starting...
+2026-03-01 16:23:49: 🤖 Telegram bot command polling started. Send /reauth to re-authenticate.
+2026-03-01 16:23:49: 🌐 Launching Chrome...
+2026-03-01 16:23:49: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:23:49: ✅ WhatsApp Agent started.
+2026-03-01 16:24:00: 🔑 Pairing code received: CQD3GX6J
+2026-03-01 16:24:01: 🔔 Telegram notification sent
+2026-03-01 16:24:43: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:24:43: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:24:43: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:24:46: 
+2026-03-01 16:24:46: ✅ [READY] WhatsApp connected & ready!
+2026-03-01 16:24:46: ✅ [READY] Logged in at: 1/3/2026, 4:24:46 pm
+2026-03-01 16:24:46: 🔔 Telegram notification sent
+2026-03-01 16:24:46: ⏳ Startup grace period: 30s
+2026-03-01 16:24:54: 🔔 Telegram notification sent
+2026-03-01 16:24:56: 🔄 /reauth command received from Telegram
+2026-03-01 16:24:57: 🔔 Telegram notification sent
+2026-03-01 16:24:57: 🗑️ Old auth session deleted
+2026-03-01 16:24:57: 🌐 Launching Chrome...
+2026-03-01 16:24:57: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:25:03: 🔑 Pairing code received: 5TL93Z6E
+2026-03-01 16:25:04: 🔔 Telegram notification sent
+2026-03-01 16:26:08: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:26:08: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:26:08: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:26:11: 
+2026-03-01 16:26:11: ✅ [READY] WhatsApp connected & ready!
+2026-03-01 16:26:11: ✅ [READY] Logged in at: 1/3/2026, 4:26:11 pm
+2026-03-01 16:26:12: 🔔 Telegram notification sent
+2026-03-01 16:26:12: ⏳ Startup grace period: 30s
+2026-03-01 16:26:25: 🔔 Telegram notification sent
