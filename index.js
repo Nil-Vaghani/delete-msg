@@ -300,11 +300,19 @@ function getExtension(mimetype) {
 }
 
 // ─── Save media to temp folder ──────────────────────────
+const MAX_MEDIA_SIZE_MB = 10; // Skip media larger than 10MB to save memory
 async function saveMediaToTemp(msg) {
   try {
     if (!msg.hasMedia) return null;
     const media = await msg.downloadMedia();
     if (!media || !media.data) return null;
+
+    // Skip large files to prevent memory spikes
+    const sizeBytes = Buffer.byteLength(media.data, "base64");
+    if (sizeBytes > MAX_MEDIA_SIZE_MB * 1024 * 1024) {
+      console.log(`⚠️ Skipping large media (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > ${MAX_MEDIA_SIZE_MB}MB limit)`);
+      return null;
+    }
 
     const ext = getExtension(media.mimetype);
     const timestamp = Date.now();
@@ -392,12 +400,12 @@ async function start() {
     authStrategy: new RemoteAuth({
       clientId: "wa-agent",
       store: store,
-      backupSyncIntervalMs: 60000, // backup session every 1 min
+      backupSyncIntervalMs: 300000, // backup session every 5 min (reduces memory spikes)
     }),
     authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
     qrMaxRetries: 5, // give up after 5 QR rotations (~100 seconds)
     puppeteer: {
-      headless: true,
+      headless: "shell", // lightweight headless mode (~100-150MB less than full Chrome)
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -419,6 +427,8 @@ async function start() {
         "--metrics-recording-only",
         "--no-first-run",
         "--js-flags=--max-old-space-size=128",
+        "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+        "--disable-ipc-flooding-protection",
       ],
     },
   });
