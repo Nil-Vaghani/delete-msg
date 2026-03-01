@@ -180,3 +180,7 @@
 2026-03-01 16:26:12: 🔔 Telegram notification sent
 2026-03-01 16:26:12: ⏳ Startup grace period: 30s
 2026-03-01 16:26:25: 🔔 Telegram notification sent
+2026-03-01 16:30:35: 
+2026-03-01 16:30:35: SIGINT received. Shutting down...
+2026-03-01 16:30:35: 
+2026-03-01 16:30:35: SIGINT received. Shutting down...

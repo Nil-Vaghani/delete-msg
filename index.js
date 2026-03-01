@@ -289,6 +289,14 @@ async function pollTelegramCommands() {
           if (text === "/reauth") {
             console.log("🔄 /reauth command received from Telegram");
             await handleReauth();
+          } else if (text === "/rebuild") {
+            console.log("🔄 /rebuild command received from Telegram");
+            await sendPushNotification(
+              "🔄 Rebuilding",
+              "Restarting the agent process via PM2...",
+            );
+            // Exit with code 0 — PM2 will auto-restart
+            process.exit(0);
           } else if (text === "/status") {
             const status = currentClient?.info
               ? `✅ Connected as ${currentClient.info.pushname}`
@@ -426,7 +434,7 @@ function createClient() {
     console.log(`✅ [READY] Logged in at: ${getIST()}`);
     await sendPushNotification(
       "✅ WhatsApp Connected",
-      `Bot is now connected and ready.\nTime: ${getIST()}\n\nCommands:\n/status — Check bot status\n/reauth — Re-authenticate`,
+      `Bot is now connected and ready.\nTime: ${getIST()}\n\nCommands:\n/status — Check bot status\n/reauth — Re-authenticate\n/rebuild — Restart agent`,
     );
 
     readyTimestamp = Date.now();
