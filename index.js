@@ -148,6 +148,14 @@ const messageCache = new Map();
 const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000;
 const MAX_CACHE_SIZE = 500; // Limit cache to 500 messages to save memory
 
+// Dedup set for revoke events (prevents processing same deletion twice)
+const processedRevokes = new Set();
+const REVOKE_DEDUP_TTL_MS = 60 * 1000; // clear dedup entry after 60 seconds
+
+// Startup grace period — ignore old revocations synced on connect
+let readyTimestamp = 0;
+const STARTUP_GRACE_MS = 30 * 1000; // 30 seconds after ready
+
 function cacheMessage(msgId, data) {
   // Evict oldest entries if cache is too large
   if (messageCache.size >= MAX_CACHE_SIZE) {
@@ -518,24 +526,11 @@ async function start() {
       `Bot is now connected and ready.\nTime: ${getIST()}`,
     );
 
-    // ── Backup revoke detection: inject additional listener into WhatsApp Web ──
-    // The default change:type event doesn't always fire on multi-device linked devices
-    try {
-      await client.pupPage.evaluate(() => {
-        // Listen for ALL property changes on messages, catch revocations the default handler misses
-        window.Store.Msg.on("change", (msg) => {
-          if (msg.type === "revoked") {
-            window.onChangeMessageTypeEvent(
-              window.WWebJS.getMessageModel(msg),
-            );
-          }
-        });
-        console.log("[BACKUP] Additional revoke listener injected");
-      });
-      console.log("🔧 Backup revoke detection injected into WhatsApp Web");
-    } catch (err) {
-      console.error("Failed to inject backup revoke listener:", err.message);
-    }
+    // Set ready timestamp for startup grace period
+    readyTimestamp = Date.now();
+    console.log(
+      `⏳ Startup grace period: ignoring old revocations for ${STARTUP_GRACE_MS / 1000}s`,
+    );
   });
 
   // ─── Incoming Messages ──────────────────────────────────
@@ -660,14 +655,32 @@ async function start() {
 
   // ─── Backup: message_revoke_me (catches some revocations the other handler misses) ──
   client.on("message_revoke_me", async (msg) => {
-    console.log(`🗑️ [REVOKE_ME] message_revoke_me fired! type=${msg.type}, id=${msg.id?._serialized}`);
+    console.log(
+      `🗑️ [REVOKE_ME] message_revoke_me fired! type=${msg.type}, id=${msg.id?._serialized}`,
+    );
   });
 
   // ─── Delete-for-Everyone Detection ──────────────────────
   client.on("message_revoke_everyone", async (afterMsg, beforeMsg) => {
+    const msgId_dedup = afterMsg?.id?._serialized;
     console.log(
-      `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${afterMsg?.id?._serialized}, beforeMsg=${!!beforeMsg}`,
+      `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${msgId_dedup}, beforeMsg=${!!beforeMsg}`,
     );
+
+    // Skip during startup grace period (old synced revocations)
+    if (Date.now() - readyTimestamp < STARTUP_GRACE_MS) {
+      console.log(`⏩ Skipping (startup grace period): ${msgId_dedup}`);
+      return;
+    }
+
+    // Skip duplicates (backup listener may fire same event twice)
+    if (processedRevokes.has(msgId_dedup)) {
+      console.log(`⏩ Skipping duplicate: ${msgId_dedup}`);
+      return;
+    }
+    processedRevokes.add(msgId_dedup);
+    setTimeout(() => processedRevokes.delete(msgId_dedup), REVOKE_DEDUP_TTL_MS);
+
     try {
       const time = getIST();
 
