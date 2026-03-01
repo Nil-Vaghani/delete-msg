@@ -1,20 +1,9 @@
-kam bandh karvu hoy to
-Stop :
-pm2 stop wa-agent
 
-kam chalu rakhvu hoy to 
-Start :
-pm2 start wa-agent
+Command	                      What it does
 
 
-Delete :
-pm2 delete wa-agent
-
-Status :
-pm2 status
-
-Restart :
-pm2 restart wa-agent
-
-This is # ── Backend: MongoDB Atlas ─────────────────────────────────
-MONGODB_URI=mongodb+srv://Dolta:qsZu4se9VxTyPWyL@cluster0.axgkl3t.mongodb.net/gst-calculator?appName=Cluster0 from one of my old projects.
+pm2 status	                  Check app status
+pm2 logs wa-agent	          View live logs
+pm2 restart wa-agent       	  Restart the app
+pm2 stop wa-agent	          Stop the app
+pm2 monit	                  Real-time monitoring dashboard

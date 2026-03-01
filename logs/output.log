@@ -22,3 +22,15 @@
 2026-03-01 15:39:03: ✅ [READY] Logged in at: 1/3/2026, 3:39:03 pm
 2026-03-01 15:39:04: 🔔 Telegram notification sent
 2026-03-01 15:39:04: ⏳ Startup grace period: ignoring old revocations for 30s
+2026-03-01 15:40:29: 🔗 [MONGO] MongoDB reconnected
+2026-03-01 15:40:31: 💾 [AUTH] Session saved to MongoDB successfully
+2026-03-01 15:44:37: 💾 Saved: Private Chat - Bhai
+2026-03-01 15:44:43: 🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=false_918140070797@c.us_AC89B1C946F12983EA798073FAD5334E, beforeMsg=true
+2026-03-01 15:44:43: 📋 Found message in manual cache: Archy is queen 👑...
+2026-03-01 15:44:43: 🗑️ Delete detected: Private Chat - Bhai
+2026-03-01 15:44:44: 🔔 Telegram notification sent
+2026-03-01 15:45:29: 💾 Saved: Private Chat - Bhai
+2026-03-01 15:45:35: 🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=false_918140070797@c.us_ACD55092BCF34E78B1752537E9805DCC, beforeMsg=true
+2026-03-01 15:45:36: 📋 Found message in manual cache: Hello...
+2026-03-01 15:45:39: 🗑️ Delete detected: Private Chat - Bhai
+2026-03-01 15:45:43: 🔔 Telegram notification sent

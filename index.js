@@ -617,6 +617,46 @@ async function start() {
 
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
+      // Save message as .txt file in media/temp (for delete-for-everyone recovery)
+      let msgFilePath = null;
+      try {
+        const timestamp = Date.now();
+        const safeName = senderName
+          .replace(/[^a-zA-Z0-9]/g, "_")
+          .substring(0, 20);
+        const msgFilename = `${timestamp}_${safeName}_${msg.id.id}.txt`;
+        msgFilePath = path.join(TEMP_MEDIA_DIR, msgFilename);
+        const fileContent = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nSent: ${getIST(new Date(msg.timestamp * 1000))}\nMessage: ${messageBody}${mediaRef ? `\nMedia: ${mediaRef.trim().replace("Media: ", "")}` : ""}`;
+        fs.writeFileSync(msgFilePath, fileContent, "utf8");
+
+        // Auto-delete after 68h window
+        const msgFileTimeout = setTimeout(() => {
+          try {
+            if (fs.existsSync(msgFilePath)) {
+              fs.unlinkSync(msgFilePath);
+            }
+          } catch (e) {
+            /* ignore cleanup errors */
+          }
+        }, DELETE_WINDOW_MS);
+
+        // Store timeout for cleanup on delete
+        if (!mediaTracker.has(msg.id._serialized)) {
+          mediaTracker.set(msg.id._serialized, {
+            msgFilePath,
+            msgFilename,
+            msgFileTimeout,
+          });
+        } else {
+          const existing = mediaTracker.get(msg.id._serialized);
+          existing.msgFilePath = msgFilePath;
+          existing.msgFilename = msgFilename;
+          existing.msgFileTimeout = msgFileTimeout;
+        }
+      } catch (fileErr) {
+        console.error("Error saving message file:", fileErr.message);
+      }
+
       // Cache message for delete-for-everyone detection
       cacheMessage(msg.id._serialized, {
         body: messageBody,
@@ -624,6 +664,7 @@ async function start() {
         senderNumber: senderActualNumber,
         chatLocation,
         timestamp: msg.timestamp,
+        msgFilePath,
       });
 
       console.log(`💾 Saved: ${chatLocation} - ${senderName}`);
@@ -729,14 +770,45 @@ async function start() {
       let mediaRef = "";
 
       if (tracked) {
-        clearTimeout(tracked.timeout);
-        const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
-        if (fs.existsSync(tracked.filePath)) {
-          fs.renameSync(tracked.filePath, savedPath);
-          mediaRef = `\nSaved Media: media/saved/${tracked.filename}`;
-          console.log(
-            `🔒 Permanently saved deleted media: ${tracked.filename}`,
-          );
+        // Move media file to saved
+        if (tracked.filePath) {
+          clearTimeout(tracked.timeout);
+          const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
+          if (fs.existsSync(tracked.filePath)) {
+            fs.renameSync(tracked.filePath, savedPath);
+            mediaRef = `\nSaved Media: media/saved/${tracked.filename}`;
+            console.log(
+              `🔒 Permanently saved deleted media: ${tracked.filename}`,
+            );
+          }
+        }
+
+        // Move message .txt file to saved
+        if (tracked.msgFilePath) {
+          clearTimeout(tracked.msgFileTimeout);
+          const savedMsgPath = path.join(SAVED_MEDIA_DIR, tracked.msgFilename);
+          if (fs.existsSync(tracked.msgFilePath)) {
+            fs.renameSync(tracked.msgFilePath, savedMsgPath);
+            console.log(
+              `🔒 Permanently saved deleted message file: ${tracked.msgFilename}`,
+            );
+          }
+        }
+      }
+
+      // Also check cache for msgFilePath (text-only messages without media)
+      if (!tracked && cached && cached.msgFilePath) {
+        try {
+          const txtBasename = path.basename(cached.msgFilePath);
+          const savedTxtPath = path.join(SAVED_MEDIA_DIR, txtBasename);
+          if (fs.existsSync(cached.msgFilePath)) {
+            fs.renameSync(cached.msgFilePath, savedTxtPath);
+            console.log(
+              `🔒 Permanently saved deleted message file: ${txtBasename}`,
+            );
+          }
+        } catch (moveErr) {
+          console.error("Error moving message file:", moveErr.message);
         }
       }
 
@@ -746,7 +818,7 @@ async function start() {
 
       // Save deleted message media to MongoDB GridFS
       let mediaFileId = null;
-      if (tracked) {
+      if (tracked && tracked.filePath) {
         // Read from saved location if moved, otherwise temp
         const mediaPath = fs.existsSync(
           path.join(SAVED_MEDIA_DIR, tracked.filename),
@@ -775,7 +847,8 @@ async function start() {
             : cached && cached.timestamp
               ? getIST(new Date(cached.timestamp * 1000))
               : "Unknown",
-        mediaFilename: tracked ? tracked.filename : undefined,
+        mediaFilename:
+          tracked && tracked.filename ? tracked.filename : undefined,
         mediaFileId: mediaFileId || undefined,
       });
 
@@ -795,7 +868,7 @@ async function start() {
       );
 
       // Send deleted media to Telegram if available
-      if (tracked) {
+      if (tracked && tracked.filePath) {
         const tgMediaPath = fs.existsSync(
           path.join(SAVED_MEDIA_DIR, tracked.filename),
         )
