@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const { GridFSBucket } = require("mongodb");
 const { Readable } = require("stream");
 const QRCode = require("qrcode");
-const http = require("http");
+// const http = require("http"); // no longer needed (removed Render health server)
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
@@ -871,33 +871,7 @@ async function start() {
     }
   });
 
-  // ─── Health Check Server (for Render) ──────────────────
-  const PORT = process.env.PORT || 3000;
-  http
-    .createServer((req, res) => {
-      res.writeHead(200);
-      res.end("WhatsApp Agent is running");
-    })
-    .listen(PORT, () => console.log(`🌐 Health server on port ${PORT}`));
-
-  // ─── Self-Ping Keep-Alive (prevents Render free tier sleep) ────
-  const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
-  if (RENDER_URL) {
-    const PING_INTERVAL_MS = 14 * 60 * 1000; // 14 minutes
-    setInterval(async () => {
-      try {
-        const res = await fetch(RENDER_URL);
-        console.log(`🏓 Self-ping: ${res.status}`);
-      } catch (err) {
-        console.error("Self-ping error:", err.message);
-      }
-    }, PING_INTERVAL_MS);
-    console.log(`🏓 Self-ping enabled: every 14 min → ${RENDER_URL}`);
-  } else {
-    console.log(
-      "ℹ️ RENDER_EXTERNAL_URL not set — self-ping disabled (use cron-job.org instead)",
-    );
-  }
+  console.log("✅ WhatsApp Agent started via PM2.");
 }
 
 start().catch((err) => {
