@@ -11,7 +11,10 @@ require("dotenv").config();
 
 // ─── Prevent crash from unhandled promise rejections ──
 process.on("unhandledRejection", (reason, promise) => {
-  console.error("⚠️ [UNHANDLED] Promise rejection (caught by handler):", reason);
+  console.error(
+    "⚠️ [UNHANDLED] Promise rejection (caught by handler):",
+    reason,
+  );
 });
 
 // ─── MongoDB Models for Persistent Storage ──────────────
@@ -57,10 +60,21 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
 
 // ─── Push Notification via Telegram Bot ──────────────────
 
+function escapeHTML(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function sendPushNotification(title, body) {
   try {
-    const text = `*${title}*\n\n${body}`;
-    const res = await fetch(
+    const safeTitle = escapeHTML(title);
+    const safeBody = escapeHTML(body);
+    const text = `<b>${safeTitle}</b>\n\n${safeBody}`;
+
+    // Try with HTML parse mode first
+    let res = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
         method: "POST",
@@ -68,10 +82,30 @@ async function sendPushNotification(title, body) {
         body: JSON.stringify({
           chat_id: TELEGRAM_CHAT_ID,
           text: text,
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
         }),
       },
     );
+
+    // Fallback: retry as plain text if HTML parsing fails
+    if (!res.ok) {
+      console.warn(
+        `Telegram HTML parse failed (${res.status}), retrying as plain text...`,
+      );
+      const plainText = `${title}\n\n${body}`;
+      res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: plainText,
+          }),
+        },
+      );
+    }
+
     if (!res.ok) {
       const errBody = await res.text();
       console.error(`Telegram API error (${res.status}): ${errBody}`);
@@ -309,6 +343,27 @@ async function start() {
 
   const store = new MongoStore({ mongoose });
 
+  // ─── Startup cleanup: remove expired temp media files ──
+  try {
+    const now = Date.now();
+    const tempFiles = fs.readdirSync(TEMP_MEDIA_DIR);
+    let cleaned = 0;
+    for (const file of tempFiles) {
+      const filePath = path.join(TEMP_MEDIA_DIR, file);
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > DELETE_WINDOW_MS) {
+        fs.unlinkSync(filePath);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0)
+      console.log(
+        `🧹 Startup cleanup: removed ${cleaned} expired temp file(s)`,
+      );
+  } catch (err) {
+    console.error("Startup temp cleanup error:", err.message);
+  }
+
   console.log("🌐 [CHROME] Launching Chrome browser via Puppeteer...");
 
   const client = new Client({
@@ -368,10 +423,15 @@ async function start() {
         }
       } catch (err) {
         console.error("[QR] QR image send error:", err);
-        await sendPushNotification("📱 QR Code Needed", "A QR code was generated but couldn't be sent as image. Check Render logs.");
+        await sendPushNotification(
+          "📱 QR Code Needed",
+          "A QR code was generated but couldn't be sent as image. Check Render logs.",
+        );
       }
     } else {
-      console.log("📱 [QR] QR rotated (not re-sending to Telegram — scan quickly or restart bot for a fresh Telegram QR)");
+      console.log(
+        "📱 [QR] QR rotated (not re-sending to Telegram — scan quickly or restart bot for a fresh Telegram QR)",
+      );
     }
   });
 
@@ -421,7 +481,6 @@ async function start() {
     try {
       const chat = await msg.getChat();
       const contact = await msg.getContact();
-      const senderID = msg.isGroupMsg ? msg.author : msg.from;
       const senderName = contact.name || contact.pushname || contact.number;
       const senderActualNumber = contact.number;
       const time = new Date().toLocaleString();
@@ -522,7 +581,9 @@ async function start() {
         });
         if (originalMsg && originalMsg.mediaFileId) {
           mediaFileId = originalMsg.mediaFileId;
-          console.log(`♻️ Reusing existing GridFS file for deleted media: ${tracked.filename}`);
+          console.log(
+            `♻️ Reusing existing GridFS file for deleted media: ${tracked.filename}`,
+          );
         } else if (tracked.mediaData) {
           // Fallback: upload if original wasn't found (shouldn't happen normally)
           mediaFileId = await uploadMediaToGridFS(
@@ -530,7 +591,9 @@ async function start() {
             tracked.mimetype,
             tracked.filename,
           );
-          console.log(`📦 Fallback: uploaded deleted media to GridFS: ${tracked.filename}`);
+          console.log(
+            `📦 Fallback: uploaded deleted media to GridFS: ${tracked.filename}`,
+          );
         }
       }
 
