@@ -27,7 +27,7 @@ const deletedMessageSchema = new mongoose.Schema({
   sentTime: { type: String },
   mediaFilename: { type: String },
   mediaFileId: { type: mongoose.Schema.Types.ObjectId }, // GridFS file reference
-  createdAt: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now, expires: 68 * 60 * 60 }, // Auto-delete after 68 hours
 });
 
 const DeletedMessage = mongoose.model("DeletedMessage", deletedMessageSchema);
@@ -137,19 +137,36 @@ const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
 });
 
 // ─── Message Cache (for delete-for-everyone detection) ────────
-// Key: msg serialized ID → { body, senderName, senderNumber, chatLocation, timestamp }
 const messageCache = new Map();
-const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000; // 68 hours (matches WhatsApp delete window)
+const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000;
+const MAX_CACHE_SIZE = 500; // Limit cache to 500 messages to save memory
 
 function cacheMessage(msgId, data) {
+  // Evict oldest entries if cache is too large
+  if (messageCache.size >= MAX_CACHE_SIZE) {
+    const oldestKey = messageCache.keys().next().value;
+    messageCache.delete(oldestKey);
+  }
   messageCache.set(msgId, { ...data, cachedAt: Date.now() });
-  // Auto-remove from cache after 68h
   setTimeout(() => messageCache.delete(msgId), MESSAGE_CACHE_TTL_MS);
 }
 
 // ─── Media Tracker (for delete-for-everyone detection) ──
-// Key: msg serialized ID → { filePath, filename, timeout, mediaData, mimetype }
+// Key: msg serialized ID → { filePath, filename, timeout, mimetype }
+// NOTE: media data is NOT stored in RAM — read from disk when needed
 const mediaTracker = new Map();
+
+// ─── Helper: Read media from disk as base64 ─────────────
+function readMediaAsBase64(filePath) {
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath).toString("base64");
+    }
+  } catch (err) {
+    console.error("Error reading media from disk:", err.message);
+  }
+  return null;
+}
 
 // ─── GridFS & Storage Limit Helpers ─────────────────────
 let gridFSBucket = null;
@@ -306,7 +323,6 @@ async function saveMediaToTemp(msg) {
       filePath,
       filename,
       timeout,
-      mediaData: media.data,
       mimetype: media.mimetype,
       sentTimestamp: msg.timestamp,
     });
@@ -381,6 +397,12 @@ async function start() {
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--single-process",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--js-flags=--max-old-space-size=256",
       ],
     },
   });
@@ -502,14 +524,17 @@ async function start() {
             const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
             if (fs.existsSync(tracked.filePath)) {
               fs.copyFileSync(tracked.filePath, savedPath);
-              console.log(`🔒 View-once media saved permanently: ${tracked.filename}`);
+              console.log(
+                `🔒 View-once media saved permanently: ${tracked.filename}`,
+              );
             }
 
             // Upload to MongoDB GridFS
             let mediaFileId = null;
-            if (tracked.mediaData) {
+            const viewOnceData = readMediaAsBase64(tracked.filePath);
+            if (viewOnceData) {
               mediaFileId = await uploadMediaToGridFS(
-                tracked.mediaData,
+                viewOnceData,
                 tracked.mimetype,
                 tracked.filename,
               );
@@ -532,9 +557,9 @@ async function start() {
               `👁️ View-Once from ${senderName}`,
               `Where: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nTime: ${time}\nMessage: ${messageBody || "[media]"}`,
             );
-            if (tracked.mediaData) {
+            if (viewOnceData) {
               await sendTelegramMedia(
-                tracked.mediaData,
+                viewOnceData,
                 tracked.mimetype,
                 tracked.filename,
                 `👁️ View-once media from ${senderName} (${senderActualNumber})\nIn: ${chatLocation}`,
@@ -635,12 +660,21 @@ async function start() {
 
       // Save deleted message media to MongoDB GridFS
       let mediaFileId = null;
-      if (tracked && tracked.mediaData) {
-        mediaFileId = await uploadMediaToGridFS(
-          tracked.mediaData,
-          tracked.mimetype,
-          tracked.filename,
-        );
+      if (tracked) {
+        // Read from saved location if moved, otherwise temp
+        const mediaPath = fs.existsSync(
+          path.join(SAVED_MEDIA_DIR, tracked.filename),
+        )
+          ? path.join(SAVED_MEDIA_DIR, tracked.filename)
+          : tracked.filePath;
+        const mediaBase64 = readMediaAsBase64(mediaPath);
+        if (mediaBase64) {
+          mediaFileId = await uploadMediaToGridFS(
+            mediaBase64,
+            tracked.mimetype,
+            tracked.filename,
+          );
+        }
       }
 
       await DeletedMessage.create({
@@ -675,13 +709,21 @@ async function start() {
       );
 
       // Send deleted media to Telegram if available
-      if (tracked && tracked.mediaData) {
-        await sendTelegramMedia(
-          tracked.mediaData,
-          tracked.mimetype,
-          tracked.filename,
-          `📎 Deleted file from ${senderName} (${senderNumber})\nIn: ${chatLocation}`,
-        );
+      if (tracked) {
+        const tgMediaPath = fs.existsSync(
+          path.join(SAVED_MEDIA_DIR, tracked.filename),
+        )
+          ? path.join(SAVED_MEDIA_DIR, tracked.filename)
+          : tracked.filePath;
+        const tgMediaData = readMediaAsBase64(tgMediaPath);
+        if (tgMediaData) {
+          await sendTelegramMedia(
+            tgMediaData,
+            tracked.mimetype,
+            tracked.filename,
+            `📎 Deleted file from ${senderName} (${senderNumber})\nIn: ${chatLocation}`,
+          );
+        }
       }
 
       // Clean up tracker and cache
