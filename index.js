@@ -310,7 +310,9 @@ async function saveMediaToTemp(msg) {
     // Skip large files to prevent memory spikes
     const sizeBytes = Buffer.byteLength(media.data, "base64");
     if (sizeBytes > MAX_MEDIA_SIZE_MB * 1024 * 1024) {
-      console.log(`⚠️ Skipping large media (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > ${MAX_MEDIA_SIZE_MB}MB limit)`);
+      console.log(
+        `⚠️ Skipping large media (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > ${MAX_MEDIA_SIZE_MB}MB limit)`,
+      );
       return null;
     }
 
