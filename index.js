@@ -18,17 +18,6 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 // ─── MongoDB Models for Persistent Storage ──────────────
-const messageSchema = new mongoose.Schema({
-  time: { type: String, required: true },
-  where: { type: String, required: true },
-  senderName: { type: String, required: true },
-  senderNumber: { type: String },
-  message: { type: String },
-  mediaFilename: { type: String },
-  mediaFileId: { type: mongoose.Schema.Types.ObjectId }, // GridFS file reference
-  createdAt: { type: Date, default: Date.now },
-});
-
 const deletedMessageSchema = new mongoose.Schema({
   time: { type: String, required: true },
   where: { type: String, required: true },
@@ -41,7 +30,6 @@ const deletedMessageSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-const Message = mongoose.model("Message", messageSchema);
 const DeletedMessage = mongoose.model("DeletedMessage", deletedMessageSchema);
 
 // ─── Validate Environment Variables ─────────────────────
@@ -496,37 +484,16 @@ async function start() {
 
       // Save media temporarily (for delete-for-everyone capture)
       let mediaRef = "";
-      let mediaFileId = null;
       if (msg.hasMedia) {
         const filename = await saveMediaToTemp(msg);
         if (filename) {
           mediaRef = `\nMedia: media/temp/${filename}`;
-          // Upload media to MongoDB GridFS
-          const tracked = mediaTracker.get(msg.id._serialized);
-          if (tracked && tracked.mediaData) {
-            mediaFileId = await uploadMediaToGridFS(
-              tracked.mediaData,
-              tracked.mimetype,
-              filename,
-            );
-          }
         }
       }
 
       const logEntry = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nMessage: ${messageBody}${mediaRef}\n------------------------------\n`;
 
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
-
-      // Save to MongoDB for persistence
-      await Message.create({
-        time,
-        where: chatLocation,
-        senderName,
-        senderNumber: senderActualNumber,
-        message: messageBody,
-        mediaFilename: mediaRef ? mediaRef.replace("\nMedia: ", "") : undefined,
-        mediaFileId: mediaFileId || undefined,
-      });
 
       // Cache message for delete-for-everyone detection
       cacheMessage(msg.id._serialized, {
@@ -611,29 +578,14 @@ async function start() {
       const logEntry = `\n🗑️ DELETED MESSAGE DETECTED\nTime: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nOriginal Message: ${originalText}${mediaRef}\n==============================\n`;
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
 
-      // Save to MongoDB for persistence — REUSE existing GridFS file ID from original message
+      // Save deleted message media to MongoDB GridFS
       let mediaFileId = null;
-      if (tracked && tracked.filename) {
-        // Look up the original message's GridFS file ID instead of re-uploading
-        const originalMsg = await Message.findOne({
-          mediaFilename: `media/temp/${tracked.filename}`,
-        });
-        if (originalMsg && originalMsg.mediaFileId) {
-          mediaFileId = originalMsg.mediaFileId;
-          console.log(
-            `♻️ Reusing existing GridFS file for deleted media: ${tracked.filename}`,
-          );
-        } else if (tracked.mediaData) {
-          // Fallback: upload if original wasn't found (shouldn't happen normally)
-          mediaFileId = await uploadMediaToGridFS(
-            tracked.mediaData,
-            tracked.mimetype,
-            tracked.filename,
-          );
-          console.log(
-            `📦 Fallback: uploaded deleted media to GridFS: ${tracked.filename}`,
-          );
-        }
+      if (tracked && tracked.mediaData) {
+        mediaFileId = await uploadMediaToGridFS(
+          tracked.mediaData,
+          tracked.mimetype,
+          tracked.filename,
+        );
       }
 
       await DeletedMessage.create({
