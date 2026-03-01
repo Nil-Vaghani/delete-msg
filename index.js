@@ -11,7 +11,9 @@ require("dotenv").config();
 
 // ─── Indian Standard Time Helper ────────────────────
 function getIST(date) {
-  return (date || new Date()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+  return (date || new Date()).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+  });
 }
 
 // ─── Prevent crash from unhandled promise rejections ──
