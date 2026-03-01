@@ -384,7 +384,7 @@ async function start() {
       backupSyncIntervalMs: 60000, // backup session every 1 min
     }),
     authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
-    qrMaxRetries: 5, // give up after 5 QR rotations (~100 seconds)
+    qrMaxRetries: 10, // give up after 10 QR rotations (~200 seconds)
     puppeteer: {
       headless: true,
       args: [
@@ -400,48 +400,42 @@ async function start() {
   console.log("🌐 [CHROME] Client created, initializing WhatsApp Web...");
 
   // ─── WhatsApp Connection Lifecycle Logging ───────────────
-  let qrSentToTelegram = false;
+  let qrCount = 0;
 
   client.on("remote_session_saved", () => {
     console.log("💾 [AUTH] Session saved to MongoDB successfully");
   });
 
   client.on("qr", async (qr) => {
-    console.log("\n📱 [QR] New QR code generated");
+    qrCount++;
+    console.log(`\n📱 [QR] New QR code generated (attempt ${qrCount}/10)`);
 
-    // Send QR to Telegram only ONCE (first time)
-    if (!qrSentToTelegram) {
-      qrSentToTelegram = true;
-      try {
-        const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
-        const blob = new Blob([qrBuffer], { type: "image/png" });
-        const formData = new FormData();
-        formData.append("chat_id", TELEGRAM_CHAT_ID);
-        formData.append(
-          "caption",
-          "📱 Scan this QR code with WhatsApp to connect\n⏱️ QR expires in ~20s — if expired, bot will retry up to 5 times\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR",
-        );
-        formData.append("photo", blob, "qr-code.png");
-        const res = await fetch(
-          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
-          { method: "POST", body: formData },
-        );
-        if (!res.ok) {
-          const errBody = await res.text();
-          console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
-        } else {
-          console.log("📱 [QR] QR code image sent to Telegram (first QR only)");
-        }
-      } catch (err) {
-        console.error("[QR] QR image send error:", err);
-        await sendPushNotification(
-          "📱 QR Code Needed",
-          "A QR code was generated but couldn't be sent as image. Check Render logs.",
-        );
+    // Send EVERY QR to Telegram so user always has a fresh one to scan
+    try {
+      const qrBuffer = await QRCode.toBuffer(qr, { width: 300, margin: 2 });
+      const blob = new Blob([qrBuffer], { type: "image/png" });
+      const formData = new FormData();
+      formData.append("chat_id", TELEGRAM_CHAT_ID);
+      formData.append(
+        "caption",
+        `📱 QR Code (attempt ${qrCount}/10)\n⏱️ Scan within ~20 seconds!\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR`,
+      );
+      formData.append("photo", blob, "qr-code.png");
+      const res = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendPhoto`,
+        { method: "POST", body: formData },
+      );
+      if (!res.ok) {
+        const errBody = await res.text();
+        console.error(`Telegram QR photo error (${res.status}): ${errBody}`);
+      } else {
+        console.log(`📱 [QR] QR code #${qrCount} sent to Telegram`);
       }
-    } else {
-      console.log(
-        "📱 [QR] QR rotated (not re-sending to Telegram — scan quickly or restart bot for a fresh Telegram QR)",
+    } catch (err) {
+      console.error("[QR] QR image send error:", err);
+      await sendPushNotification(
+        "📱 QR Code Needed",
+        `QR code #${qrCount} was generated but couldn't be sent as image. Check Render logs.`,
       );
     }
   });
