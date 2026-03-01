@@ -299,8 +299,8 @@ async function pollTelegramCommands() {
             );
           } else if (text === "/options") {
             await sendPushNotification(
-              "📋 Available Commands",
-              `/status — Check bot connection status\n/rebuild_it — Clear session & get new pairing code\n/options — Show this list`,
+              "✅ WhatsApp Connected",
+              `/status — Check bot status\n/rebuild_it — Re-authenticate\n/options — Show this list`,
             );
           }
         }
