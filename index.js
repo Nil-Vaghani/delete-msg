@@ -148,6 +148,17 @@ const SAVED_MEDIA_DIR = path.join(__dirname, "media", "saved");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
+// ─── Message Cache (for delete-for-everyone detection) ────────
+// Key: msg serialized ID → { body, senderName, senderNumber, chatLocation, timestamp }
+const messageCache = new Map();
+const MESSAGE_CACHE_TTL_MS = 68 * 60 * 60 * 1000; // 68 hours (matches WhatsApp delete window)
+
+function cacheMessage(msgId, data) {
+  messageCache.set(msgId, { ...data, cachedAt: Date.now() });
+  // Auto-remove from cache after 68h
+  setTimeout(() => messageCache.delete(msgId), MESSAGE_CACHE_TTL_MS);
+}
+
 // ─── Media Tracker (for delete-for-everyone detection) ──
 // Key: msg serialized ID → { filePath, filename, timeout, mediaData, mimetype }
 const mediaTracker = new Map();
@@ -523,6 +534,15 @@ async function start() {
         mediaFileId: mediaFileId || undefined,
       });
 
+      // Cache message for delete-for-everyone detection
+      cacheMessage(msg.id._serialized, {
+        body: messageBody,
+        senderName,
+        senderNumber: senderActualNumber,
+        chatLocation,
+        timestamp: msg.timestamp,
+      });
+
       console.log(`💾 Saved: ${chatLocation} - ${senderName}`);
     } catch (err) {
       console.error("Message handler error:", err);
@@ -531,28 +551,53 @@ async function start() {
 
   // ─── Delete-for-Everyone Detection ──────────────────────
   client.on("message_revoke_everyone", async (afterMsg, beforeMsg) => {
+    console.log(
+      `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${afterMsg?.id?._serialized}, beforeMsg=${!!beforeMsg}`,
+    );
     try {
       const time = new Date().toLocaleString();
-      const chat = await afterMsg.getChat();
-      const chatLocation = chat.isGroup
-        ? `Group: ${chat.name}`
-        : "Private Chat";
+
+      let chatLocation = "Unknown Chat";
+      try {
+        const chat = await afterMsg.getChat();
+        chatLocation = chat.isGroup ? `Group: ${chat.name}` : "Private Chat";
+      } catch (chatErr) {
+        console.error("Could not get chat for deleted msg:", chatErr.message);
+      }
 
       let senderName = "Unknown";
       let senderNumber = "Unknown";
       let originalText = "[Unknown - message not cached]";
 
+      // Try whatsapp-web.js cache first
       if (beforeMsg) {
-        const contact = await beforeMsg.getContact();
-        senderName = contact.name || contact.pushname || contact.number;
-        senderNumber = contact.number;
+        try {
+          const contact = await beforeMsg.getContact();
+          senderName = contact.name || contact.pushname || contact.number;
+          senderNumber = contact.number;
+        } catch (e) {
+          console.warn("Could not get contact from beforeMsg:", e.message);
+        }
         originalText = beforeMsg.body || "[<empty>]";
       }
 
-      // Check if we have temp media saved for this message
+      // Fallback: check our manual message cache
       const msgId = beforeMsg
         ? beforeMsg.id._serialized
         : afterMsg.id._serialized;
+      const cached = messageCache.get(msgId);
+      if (cached) {
+        console.log(
+          `📋 Found message in manual cache: ${cached.body?.substring(0, 50)}...`,
+        );
+        if (senderName === "Unknown") senderName = cached.senderName;
+        if (senderNumber === "Unknown") senderNumber = cached.senderNumber;
+        if (originalText === "[Unknown - message not cached]")
+          originalText = cached.body;
+        if (chatLocation === "Unknown Chat") chatLocation = cached.chatLocation;
+      }
+
+      // Check if we have temp media saved for this message
       const tracked = mediaTracker.get(msgId);
       let mediaRef = "";
 
@@ -606,7 +651,9 @@ async function start() {
         sentTime:
           beforeMsg && beforeMsg.timestamp
             ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
-            : "Unknown",
+            : cached && cached.timestamp
+              ? new Date(cached.timestamp * 1000).toLocaleString()
+              : "Unknown",
         mediaFilename: tracked ? tracked.filename : undefined,
         mediaFileId: mediaFileId || undefined,
       });
@@ -614,10 +661,13 @@ async function start() {
       console.log(`🗑️ Delete detected: ${chatLocation} - ${senderName}`);
 
       // ── Push notification via Telegram ──
-      const ntfySentTime =
-        beforeMsg && beforeMsg.timestamp
-          ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
-          : "Unknown";
+      let ntfySentTime = "Unknown";
+      if (beforeMsg && beforeMsg.timestamp) {
+        ntfySentTime = new Date(beforeMsg.timestamp * 1000).toLocaleString();
+      } else if (cached && cached.timestamp) {
+        ntfySentTime = new Date(cached.timestamp * 1000).toLocaleString();
+      }
+
       await sendPushNotification(
         `🗑️ Deleted by ${senderName}`,
         `Where: ${chatLocation}\nWho: ${senderName} (${senderNumber})\nSent: ${ntfySentTime}\nDeleted: ${time}\nMessage: ${originalText}`,
@@ -633,12 +683,22 @@ async function start() {
         );
       }
 
-      // Clean up tracker
+      // Clean up tracker and cache
       if (tracked) {
         mediaTracker.delete(msgId);
       }
+      messageCache.delete(msgId);
     } catch (err) {
       console.error("Delete detection error:", err);
+      // Last resort: try to send a basic notification even if everything else failed
+      try {
+        await sendPushNotification(
+          "🗑️ Message Deleted",
+          `A message was deleted for everyone but details could not be retrieved.\nError: ${err.message}`,
+        );
+      } catch (e) {
+        console.error("Even fallback notification failed:", e);
+      }
     }
   });
 
