@@ -517,6 +517,25 @@ async function start() {
       "✅ WhatsApp Connected",
       `Bot is now connected and ready.\nTime: ${getIST()}`,
     );
+
+    // ── Backup revoke detection: inject additional listener into WhatsApp Web ──
+    // The default change:type event doesn't always fire on multi-device linked devices
+    try {
+      await client.pupPage.evaluate(() => {
+        // Listen for ALL property changes on messages, catch revocations the default handler misses
+        window.Store.Msg.on("change", (msg) => {
+          if (msg.type === "revoked") {
+            window.onChangeMessageTypeEvent(
+              window.WWebJS.getMessageModel(msg),
+            );
+          }
+        });
+        console.log("[BACKUP] Additional revoke listener injected");
+      });
+      console.log("🔧 Backup revoke detection injected into WhatsApp Web");
+    } catch (err) {
+      console.error("Failed to inject backup revoke listener:", err.message);
+    }
   });
 
   // ─── Incoming Messages ──────────────────────────────────
@@ -616,6 +635,32 @@ async function start() {
     } catch (err) {
       console.error("Message handler error:", err);
     }
+  });
+
+  // ─── Also cache messages from message_create (catches outgoing too) ──
+  client.on("message_create", async (msg) => {
+    try {
+      if (msg.fromMe) return; // skip our own messages
+      // Just ensure it's cached (the main handler above may not cache all messages)
+      if (!messageCache.has(msg.id._serialized)) {
+        const chat = await msg.getChat();
+        const contact = await msg.getContact();
+        cacheMessage(msg.id._serialized, {
+          body: msg.body || "[<empty>]",
+          senderName: contact.name || contact.pushname || contact.number,
+          senderNumber: contact.number,
+          chatLocation: chat.isGroup ? `Group: ${chat.name}` : "Private Chat",
+          timestamp: msg.timestamp,
+        });
+      }
+    } catch (err) {
+      // Silently ignore — this is just a backup cache
+    }
+  });
+
+  // ─── Backup: message_revoke_me (catches some revocations the other handler misses) ──
+  client.on("message_revoke_me", async (msg) => {
+    console.log(`🗑️ [REVOKE_ME] message_revoke_me fired! type=${msg.type}, id=${msg.id?._serialized}`);
   });
 
   // ─── Delete-for-Everyone Detection ──────────────────────
