@@ -491,6 +491,61 @@ async function start() {
         }
       }
 
+      // ── View-Once Media Capture ──
+      const isViewOnce = msg._data && msg._data.isViewOnce;
+      if (isViewOnce && msg.hasMedia) {
+        console.log(`👁️ View-once media detected from ${senderName}`);
+        try {
+          const tracked = mediaTracker.get(msg.id._serialized);
+          if (tracked) {
+            // Save to permanent folder
+            const savedPath = path.join(SAVED_MEDIA_DIR, tracked.filename);
+            if (fs.existsSync(tracked.filePath)) {
+              fs.copyFileSync(tracked.filePath, savedPath);
+              console.log(`🔒 View-once media saved permanently: ${tracked.filename}`);
+            }
+
+            // Upload to MongoDB GridFS
+            let mediaFileId = null;
+            if (tracked.mediaData) {
+              mediaFileId = await uploadMediaToGridFS(
+                tracked.mediaData,
+                tracked.mimetype,
+                tracked.filename,
+              );
+            }
+
+            // Save record to MongoDB
+            await DeletedMessage.create({
+              time,
+              where: chatLocation,
+              senderName,
+              senderNumber: senderActualNumber,
+              originalMessage: `[👁️ VIEW-ONCE] ${messageBody || "[media]"}`,
+              sentTime: new Date(msg.timestamp * 1000).toLocaleString(),
+              mediaFilename: tracked.filename,
+              mediaFileId: mediaFileId || undefined,
+            });
+
+            // Send to Telegram
+            await sendPushNotification(
+              `👁️ View-Once from ${senderName}`,
+              `Where: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nTime: ${time}\nMessage: ${messageBody || "[media]"}`,
+            );
+            if (tracked.mediaData) {
+              await sendTelegramMedia(
+                tracked.mediaData,
+                tracked.mimetype,
+                tracked.filename,
+                `👁️ View-once media from ${senderName} (${senderActualNumber})\nIn: ${chatLocation}`,
+              );
+            }
+          }
+        } catch (err) {
+          console.error("View-once capture error:", err);
+        }
+      }
+
       const logEntry = `Time: ${time}\nWhere: ${chatLocation}\nWho: ${senderName} (${senderActualNumber})\nMessage: ${messageBody}${mediaRef}\n------------------------------\n`;
 
       fs.appendFileSync("messages_log.txt", logEntry, "utf8");
