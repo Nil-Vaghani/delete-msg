@@ -268,7 +268,7 @@ function saveDeletedRecord(data) {
 // ─── Telegram Bot Command Polling ───────────────────────
 async function pollTelegramCommands() {
   console.log(
-    "🤖 Telegram bot command polling started. Send /reauth to re-authenticate.",
+    "🤖 Telegram bot command polling started. Send /rebuild to re-authenticate.",
   );
 
   while (telegramPollingActive) {
@@ -286,17 +286,9 @@ async function pollTelegramCommands() {
           // Only accept commands from the authorized chat
           if (chatId !== TELEGRAM_CHAT_ID) continue;
 
-          if (text === "/reauth") {
-            console.log("🔄 /reauth command received from Telegram");
-            await handleReauth();
-          } else if (text === "/rebuild") {
+          if (text === "/rebuild") {
             console.log("🔄 /rebuild command received from Telegram");
-            await sendPushNotification(
-              "🔄 Rebuilding",
-              "Restarting the agent process via PM2...",
-            );
-            // Exit with code 0 — PM2 will auto-restart
-            process.exit(0);
+            await handleReauth();
           } else if (text === "/status") {
             const status = currentClient?.info
               ? `✅ Connected as ${currentClient.info.pushname}`
@@ -360,7 +352,7 @@ function createClient() {
     pairWithPhoneNumber: {
       phoneNumber: WA_PHONE_NUMBER,
       showNotification: true,
-      intervalMs: 86400000, // 24h — effectively no auto-retry (user must /reauth)
+      intervalMs: 86400000, // 24h — effectively no auto-retry (user must /rebuild)
     },
     authTimeoutMs: 120000,
     puppeteer: {
@@ -397,7 +389,7 @@ function createClient() {
     console.log(`🔑 Pairing code received: ${code}`);
     await sendPushNotification(
       "🔑 WhatsApp Pairing Code",
-      `Your code: ${code}\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number\n\nEnter this code when prompted.\n\n⚠️ Code expires in ~20 seconds. If it expires, send /reauth to get a new one.`,
+      `Your code: ${code}\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Link with Phone Number\n\nEnter this code when prompted.\n\n⚠️ Code expires in ~20 seconds. If it expires, send /rebuild to get a new one.`,
     );
   });
 
@@ -409,7 +401,7 @@ function createClient() {
     console.error(`❌ [AUTH] Authentication FAILED: ${message}`);
     await sendPushNotification(
       "❌ Auth Failed",
-      `Authentication failed: ${message}\n\nSend /reauth to try again.`,
+      `Authentication failed: ${message}\n\nSend /rebuild to try again.`,
     );
   });
 
@@ -421,7 +413,7 @@ function createClient() {
     console.error(`🔌 [DISCONNECTED] WhatsApp disconnected: ${reason}`);
     await sendPushNotification(
       "🔌 Disconnected",
-      `WhatsApp disconnected: ${reason}\n\nSend /reauth to reconnect.`,
+      `WhatsApp disconnected: ${reason}\n\nSend /rebuild to reconnect.`,
     );
   });
 
@@ -434,7 +426,7 @@ function createClient() {
     console.log(`✅ [READY] Logged in at: ${getIST()}`);
     await sendPushNotification(
       "✅ WhatsApp Connected",
-      `Bot is now connected and ready.\nTime: ${getIST()}\n\nCommands:\n/status — Check bot status\n/reauth — Re-authenticate\n/rebuild — Restart agent`,
+      `Bot is now connected and ready.\nTime: ${getIST()}\n\nCommands:\n/status — Check bot status\n/rebuild — Re-authenticate`,
     );
 
     readyTimestamp = Date.now();
@@ -782,7 +774,7 @@ async function startClient() {
     console.error("❌ Initialize failed:", msg);
     await sendPushNotification(
       "❌ Init Failed",
-      `WhatsApp failed to start: ${msg}\n\nSend /reauth to try again.`,
+      `WhatsApp failed to start: ${msg}\n\nSend /rebuild to try again.`,
     );
   });
 }
