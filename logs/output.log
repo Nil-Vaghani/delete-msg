@@ -198,3 +198,17 @@
 2026-03-01 16:30:45: ⏳ Startup grace period: 30s
 2026-03-01 16:33:21: 
 2026-03-01 16:33:21: SIGINT received. Shutting down...
+2026-03-01 16:33:21: [dotenv@17.3.1] injecting env (3) from .env -- tip: 🛡️ auth for agents: https://vestauth.com
+2026-03-01 16:33:21: 🤖 WhatsApp Agent starting...
+2026-03-01 16:33:21: 🤖 Telegram bot command polling started. Send /rebuild to re-authenticate.
+2026-03-01 16:33:22: 🌐 Launching Chrome...
+2026-03-01 16:33:22: 🚀 Initializing WhatsApp Web...
+2026-03-01 16:33:22: ✅ WhatsApp Agent started.
+2026-03-01 16:33:30: ✅ [AUTH] WhatsApp authenticated! Session saved locally.
+2026-03-01 16:33:30: 
+2026-03-01 16:33:30: ✅ [READY] WhatsApp connected & ready!
+2026-03-01 16:33:30: ✅ [READY] Logged in at: 1/3/2026, 4:33:30 pm
+2026-03-01 16:33:31: 🔔 Telegram notification sent
+2026-03-01 16:33:31: ⏳ Startup grace period: 30s
+2026-03-01 16:36:59: 
+2026-03-01 16:36:59: SIGINT received. Shutting down...
