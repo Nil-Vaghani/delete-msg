@@ -9,6 +9,11 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
+// ─── Indian Standard Time Helper ────────────────────
+function getIST(date) {
+  return (date || new Date()).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+}
+
 // ─── Prevent crash from unhandled promise rejections ──
 process.on("unhandledRejection", (reason, promise) => {
   console.error(
@@ -388,7 +393,7 @@ async function start() {
       backupSyncIntervalMs: 60000, // backup session every 1 min
     }),
     authTimeoutMs: 120000, // 2 min timeout for WhatsApp Web page load (Render free tier is slow)
-    qrMaxRetries: 10, // give up after 10 QR rotations (~200 seconds)
+    qrMaxRetries: 5, // give up after 5 QR rotations (~100 seconds)
     puppeteer: {
       headless: true,
       args: [
@@ -427,7 +432,7 @@ async function start() {
 
   client.on("qr", async (qr) => {
     qrCount++;
-    console.log(`\n📱 [QR] New QR code generated (attempt ${qrCount}/10)`);
+    console.log(`\n📱 [QR] New QR code generated (attempt ${qrCount}/5)`);
 
     // Send EVERY QR to Telegram so user always has a fresh one to scan
     try {
@@ -437,7 +442,7 @@ async function start() {
       formData.append("chat_id", TELEGRAM_CHAT_ID);
       formData.append(
         "caption",
-        `📱 QR Code (attempt ${qrCount}/10)\n⏱️ Scan within ~20 seconds!\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR`,
+        `📱 QR Code (attempt ${qrCount}/5)\n⏱️ Scan within ~20 seconds!\n\n👉 WhatsApp → Settings → Linked Devices → Link a Device → Scan QR`,
       );
       formData.append("photo", blob, "qr-code.png");
       const res = await fetch(
@@ -493,10 +498,10 @@ async function start() {
     console.log(
       "\n✅ [READY] WhatsApp connected & ready! Logging all incoming messages.",
     );
-    console.log(`✅ [READY] Logged in at: ${new Date().toLocaleString()}`);
+    console.log(`✅ [READY] Logged in at: ${getIST()}`);
     await sendPushNotification(
       "✅ WhatsApp Connected",
-      `Bot is now connected and ready.\nTime: ${new Date().toLocaleString()}`,
+      `Bot is now connected and ready.\nTime: ${getIST()}`,
     );
   });
 
@@ -507,7 +512,7 @@ async function start() {
       const contact = await msg.getContact();
       const senderName = contact.name || contact.pushname || contact.number;
       const senderActualNumber = contact.number;
-      const time = new Date().toLocaleString();
+      const time = getIST();
       const messageBody = msg.body || "[<empty>]";
       const chatLocation = chat.isGroup
         ? `Group: ${chat.name}`
@@ -556,7 +561,7 @@ async function start() {
               senderName,
               senderNumber: senderActualNumber,
               originalMessage: `[👁️ VIEW-ONCE] ${messageBody || "[media]"}`,
-              sentTime: new Date(msg.timestamp * 1000).toLocaleString(),
+              sentTime: getIST(new Date(msg.timestamp * 1000)),
               mediaFilename: tracked.filename,
               mediaFileId: mediaFileId || undefined,
             });
@@ -605,7 +610,7 @@ async function start() {
       `🗑️ [DELETE EVENT] message_revoke_everyone fired! msgId=${afterMsg?.id?._serialized}, beforeMsg=${!!beforeMsg}`,
     );
     try {
-      const time = new Date().toLocaleString();
+      const time = getIST();
 
       let chatLocation = "Unknown Chat";
       try {
@@ -694,9 +699,9 @@ async function start() {
         originalMessage: originalText,
         sentTime:
           beforeMsg && beforeMsg.timestamp
-            ? new Date(beforeMsg.timestamp * 1000).toLocaleString()
+            ? getIST(new Date(beforeMsg.timestamp * 1000))
             : cached && cached.timestamp
-              ? new Date(cached.timestamp * 1000).toLocaleString()
+              ? getIST(new Date(cached.timestamp * 1000))
               : "Unknown",
         mediaFilename: tracked ? tracked.filename : undefined,
         mediaFileId: mediaFileId || undefined,
@@ -707,9 +712,9 @@ async function start() {
       // ── Push notification via Telegram ──
       let ntfySentTime = "Unknown";
       if (beforeMsg && beforeMsg.timestamp) {
-        ntfySentTime = new Date(beforeMsg.timestamp * 1000).toLocaleString();
+        ntfySentTime = getIST(new Date(beforeMsg.timestamp * 1000));
       } else if (cached && cached.timestamp) {
-        ntfySentTime = new Date(cached.timestamp * 1000).toLocaleString();
+        ntfySentTime = getIST(new Date(cached.timestamp * 1000));
       }
 
       await sendPushNotification(
